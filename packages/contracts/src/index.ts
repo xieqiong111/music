@@ -11,6 +11,7 @@ export type {
   AuthResult,
   CredentialHandle,
   HttpTransport,
+  IncompletePaginationErrorCode,
   MusicProvider,
   PlaylistInput,
   ProgressCallback,
@@ -19,5 +20,5 @@ export type {
   ValidationResult,
 } from './provider.js';
 
-export { AppError, isAppError } from './errors.js';
-export type { AppErrorInit, TechnicalDetails } from './errors.js';
+export { APP_ERROR_CODES, AppError, isAppError } from './errors.js';
+export type { AppErrorCode, AppErrorInit, TechnicalDetails } from './errors.js';

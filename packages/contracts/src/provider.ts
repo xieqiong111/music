@@ -1,3 +1,4 @@
+import { APP_ERROR_CODES } from './errors.js';
 import type { Playlist, ProviderId, Track } from './models.js';
 
 /** A caller-supplied playlist reference before provider-specific parsing. */
@@ -53,11 +54,18 @@ export interface TaskContext {
   readonly credentialHandle?: CredentialHandle;
 }
 
+export type IncompletePaginationErrorCode = typeof APP_ERROR_CODES.INCOMPLETE_PAGINATION;
+
 export interface MusicProvider {
   readonly id: ProviderId;
   validateInput(input: PlaylistInput): Promise<ValidationResult>;
   authenticate(options: AuthOptions): Promise<AuthResult>;
   fetchPlaylist(input: PlaylistInput, context: TaskContext): Promise<Playlist>;
+  /**
+   * Returns the complete, source-ordered list. Implementations MUST reject
+   * with an AppError whose code is
+   * `APP_ERROR_CODES.INCOMPLETE_PAGINATION` instead of resolving partial data.
+   */
   fetchAllTracks(playlistId: string, context: TaskContext): Promise<Track[]>;
   logout(): Promise<void>;
 }
