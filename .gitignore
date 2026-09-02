@@ -13,4 +13,4 @@ data/
 *.p8
 playwright-report/
 test-results/
-
+*.local
