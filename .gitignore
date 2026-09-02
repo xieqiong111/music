@@ -1,0 +1,16 @@
+.worktrees/
+.superpowers/
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+data/
+*.cookie
+*.token
+*.pem
+*.p8
+playwright-report/
+test-results/
+
