@@ -18,5 +18,5 @@ export function sanitizeFilename(name: string): string {
 
   return sanitized.length > 0 && sanitized !== '.' && sanitized !== '..'
     ? sanitized
-    : 'untitled';
+    : '未命名';
 }

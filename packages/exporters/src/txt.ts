@@ -6,7 +6,17 @@ const UNKNOWN_TITLE = '[unknown title]';
 const UNKNOWN_ARTIST = '[unknown artist]';
 
 function displayTitle(track: Track): string {
-  return track.title.trim().length > 0 ? track.title : UNKNOWN_TITLE;
+  const title = track.title.trim().length > 0 ? track.title : UNKNOWN_TITLE;
+  switch (track.availability) {
+    case 'removed':
+      return `${title} [已下架]`;
+    case 'unavailable':
+      return `${title} [地区不可用]`;
+    case 'unknown':
+      return `${title} [可用性未知]`;
+    case 'available':
+      return title;
+  }
 }
 
 function displayArtists(track: Track): string {

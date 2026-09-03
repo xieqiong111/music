@@ -13,6 +13,23 @@ function displayArtists(track: Track): string {
   return artists.length > 0 ? artists.join('、') : '[unknown artist]';
 }
 
+function displayOptional(value: string | undefined, marker: string): string {
+  return value !== undefined && value.trim().length > 0 ? value : marker;
+}
+
+function displayAvailability(track: Track): string {
+  switch (track.availability) {
+    case 'removed':
+      return '[已下架]';
+    case 'unavailable':
+      return '[地区不可用]';
+    case 'unknown':
+      return '[可用性未知]';
+    case 'available':
+      return 'available';
+  }
+}
+
 function neutralizeFormula(value: string): string {
   return /^[=+\-@]/u.test(value) ? `'${value}` : value;
 }
@@ -26,10 +43,10 @@ function rowForTrack(track: Track, index: number, options: NormalizedExportOptio
   const values = [
     displayTitle(track),
     displayArtists(track),
-    ...(options.includeAlbum ? [track.album ?? ''] : []),
-    track.trackId ?? '',
+    ...(options.includeAlbum ? [displayOptional(track.album, '[专辑缺失]')] : []),
+    displayOptional(track.trackId, '[ID缺失]'),
     track.source,
-    track.availability,
+    displayAvailability(track),
   ];
   return options.includeIndex ? [String(index + 1), ...values] : values;
 }

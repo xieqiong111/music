@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeFilename } from '../src/index.js';
+import { formatLocalDate } from '../src/options.js';
 
 describe('filename sanitization', () => {
   it('removes cross-platform invalid characters, controls, and trailing separators', () => {
@@ -25,7 +26,23 @@ describe('filename sanitization', () => {
   });
 
   it('returns a usable fallback for an empty or fully invalid name', () => {
-    expect(sanitizeFilename('')).toBe('untitled');
-    expect(sanitizeFilename('...')).toBe('untitled');
+    expect(sanitizeFilename('')).toBe('未命名');
+    expect(sanitizeFilename('...')).toBe('未命名');
+  });
+
+  it('neutralizes traversal separators', () => {
+    const value = sanitizeFilename('../secret\\track');
+    expect(value).not.toMatch(/[\\/]/u);
+    expect(value).not.toBe('..');
+  });
+
+  it('formats an injected local calendar date without using UTC date fields', () => {
+    const fakeLocalDate = {
+      getFullYear: () => 2026,
+      getMonth: () => 8,
+      getDate: () => 2,
+    } as Date;
+
+    expect(formatLocalDate(fakeLocalDate)).toBe('2026-09-02');
   });
 });

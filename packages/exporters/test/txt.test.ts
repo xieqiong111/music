@@ -14,7 +14,7 @@ describe('TXT exporter', () => {
     });
 
     expect(decode(artifact.bytes)).toBe(
-      '歌一 - 歌手甲、歌手乙\n下架曲 - [unknown artist]\n不可用曲 - 歌手丙\n未知状态曲 - 歌手丁\n歌一 - 歌手甲、歌手乙\n',
+      '歌一 - 歌手甲、歌手乙\n下架曲 [已下架] - [unknown artist]\n不可用曲 [地区不可用] - 歌手丙\n未知状态曲 [可用性未知] - 歌手丁\n歌一 - 歌手甲、歌手乙\n',
     );
     expect([...artifact.bytes.slice(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
     expect(artifact).toMatchObject({
@@ -25,7 +25,8 @@ describe('TXT exporter', () => {
       trackCount: 5,
       complete: true,
     });
-    expect(artifact.filename).toMatch(/\.txt$/u);
+    expect(artifact.filename).toBe('netease_我的_歌单_测试_2026-09-03.txt');
+    expect(decode(artifact.bytes).endsWith('\n')).toBe(true);
   });
 
   it('supports numbering, artist-title order, albums, dedupe, and CRLF', () => {
@@ -42,9 +43,9 @@ describe('TXT exporter', () => {
 
     expect(text).toBe(
       '1. 歌手甲、歌手乙 - 歌一 - 专辑一\r\n' +
-        '2. [unknown artist] - 下架曲 - 专辑二\r\n' +
-        '3. 歌手丙 - 不可用曲 - 专辑三\r\n' +
-        '4. 歌手丁 - 未知状态曲\r\n',
+        '2. [unknown artist] - 下架曲 [已下架] - 专辑二\r\n' +
+        '3. 歌手丙 - 不可用曲 [地区不可用] - 专辑三\r\n' +
+        '4. 歌手丁 - 未知状态曲 [可用性未知]\r\n',
     );
     expect(artifact.trackCount).toBe(4);
     expect(artifact.lineEnding).toBe('crlf');

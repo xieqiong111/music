@@ -40,7 +40,16 @@ export interface ExportArtifact {
   readonly complete: Playlist['complete'];
 }
 
+export function formatLocalDate(
+  date: Pick<Date, 'getFullYear' | 'getMonth' | 'getDate'>,
+): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
 export function normalizeExportOptions(options: ExportOptions): NormalizedExportOptions {
+  const now = new Date();
   if (options.format !== 'txt' && options.format !== 'csv' && options.format !== 'json') {
     throw new RangeError(`Unsupported export format: ${String(options.format)}`);
   }
@@ -55,7 +64,7 @@ export function normalizeExportOptions(options: ExportOptions): NormalizedExport
     throw new RangeError(`Unsupported line ending: ${String(lineEnding)}`);
   }
 
-  const date = options.date ?? new Date().toISOString().slice(0, 10);
+  const date = options.date ?? formatLocalDate(now);
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) {
     throw new RangeError(`Invalid export date: ${date}`);
   }
@@ -69,7 +78,7 @@ export function normalizeExportOptions(options: ExportOptions): NormalizedExport
     lineEnding,
     csvBom: options.csvBom ?? false,
     date,
-    generatedAt: options.generatedAt ?? new Date().toISOString(),
+    generatedAt: options.generatedAt ?? now.toISOString(),
   };
 }
 

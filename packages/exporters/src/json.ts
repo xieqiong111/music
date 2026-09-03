@@ -15,14 +15,11 @@ export interface JsonExportEnvelope {
     readonly csvBom: boolean;
     readonly date: string;
   };
+  readonly sourceTrackCount: number;
+  readonly exportedTrackCount: number;
+  readonly complete: Playlist['complete'];
   readonly playlist: Playlist;
-}
-
-function projectedPlaylist(playlist: Playlist, tracks: readonly Track[]): Playlist {
-  const total = playlist.complete && tracks.length !== playlist.tracks.length
-    ? tracks.length
-    : playlist.total;
-  return { ...playlist, total, tracks: [...tracks] };
+  readonly tracks: readonly Track[];
 }
 
 export function createJsonEnvelope(
@@ -43,7 +40,15 @@ export function createJsonEnvelope(
       csvBom: options.csvBom,
       date: options.date,
     },
-    playlist: projectedPlaylist(playlist, tracks),
+    sourceTrackCount: playlist.tracks.length,
+    exportedTrackCount: tracks.length,
+    complete: playlist.complete,
+    playlist: {
+      ...playlist,
+      tracks: [...playlist.tracks],
+      warnings: [...playlist.warnings],
+    },
+    tracks: [...tracks],
   };
 }
 
@@ -53,5 +58,6 @@ export function renderJson(
   options: NormalizedExportOptions,
 ): string {
   const json = JSON.stringify(createJsonEnvelope(playlist, tracks, options), null, 2);
-  return json.replaceAll('\n', lineEndingValue(options));
+  const eol = lineEndingValue(options);
+  return `${json.replaceAll('\n', eol)}${eol}`;
 }

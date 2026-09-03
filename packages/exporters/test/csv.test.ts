@@ -19,7 +19,9 @@ describe('CSV exporter', () => {
 
     expect(rows[0]).toBe('序号,歌曲名,歌手,专辑,ID,来源,可用性');
     expect(rows[1]).toBe('1,歌一,歌手甲、歌手乙,专辑一,same-track,netease,available');
-    expect(rows[2]).toBe('2,下架曲,[unknown artist],专辑二,removed-track,netease,removed');
+    expect(rows[2]).toBe('2,下架曲,[unknown artist],专辑二,removed-track,netease,[已下架]');
+    expect(rows[3]).toContain('[地区不可用]');
+    expect(rows[4]).toContain('[可用性未知]');
     expect(rows).toHaveLength(7);
     expect(rows.at(-1)).toBe('');
     expect(artifact).toMatchObject({
@@ -71,5 +73,31 @@ describe('CSV exporter', () => {
     expect(artifact.bom).toBe(true);
     expect(artifact.lineEnding).toBe('crlf');
     expect(new TextDecoder('utf-8').decode(artifact.bytes)).toContain('\r\n');
+  });
+
+  it('keeps header and data aligned with index but without album', () => {
+    const artifact = exportPlaylist(playlist, {
+      format: 'csv', includeIndex: true, includeAlbum: false, date: '2026-09-03',
+    });
+    const [header, first] = decode(artifact.bytes).split('\n');
+
+    expect(header).toBe('序号,歌曲名,歌手,ID,来源,可用性');
+    expect(first).toBe('1,歌一,歌手甲、歌手乙,same-track,netease,available');
+  });
+
+  it('marks missing optional fields and unknown availability without dropping the row', () => {
+    const missing = {
+      ...playlist,
+      total: 1,
+      tracks: [{ ...playlist.tracks[3], album: undefined, trackId: undefined }],
+    };
+    const artifact = exportPlaylist(missing, {
+      format: 'csv', includeAlbum: true, date: '2026-09-03',
+    });
+    const [, row] = decode(artifact.bytes).split('\n');
+
+    expect(row).toBe(
+      '未知状态曲,歌手丁,[专辑缺失],[ID缺失],netease,[可用性未知]',
+    );
   });
 });
