@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { APP_ERROR_CODES, AppError } from '../src/index.js';
+import { APP_ERROR_CODES, AppError, redactSensitive, redactUrl } from '../src/index.js';
 
 describe('AppError', () => {
   it('recursively redacts credential fields in serialized technical details without mutating input', () => {
@@ -71,5 +71,29 @@ describe('AppError', () => {
     expect(serialized).not.toContain('fragment');
     expect(serialized).toContain('offset:0');
     expect(serialized).toContain('[Circular]');
+  });
+
+  it('redacts URL userinfo credentials in direct and nested diagnostics', () => {
+    const direct = redactUrl(
+      'https://url-user-secret:url-password-secret@example.test/path?token=query-secret#fragment',
+    );
+    const nested = redactSensitive({
+      requestUrl: new URL(
+        'https://nested-user-secret:nested-password-secret@example.test/path?token=nested-query-secret',
+      ),
+    });
+    const serialized = JSON.stringify({ direct, nested });
+
+    for (const secret of [
+      'url-user-secret',
+      'url-password-secret',
+      'nested-user-secret',
+      'nested-password-secret',
+      'query-secret',
+      'nested-query-secret',
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(serialized).toContain('example.test');
   });
 });

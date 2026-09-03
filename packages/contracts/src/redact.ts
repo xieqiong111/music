@@ -27,6 +27,8 @@ function isSensitiveKey(key: string): boolean {
 
 export function redactUrl(value: string | URL): string {
   const url = new URL(value instanceof URL ? value.toString() : value);
+  url.username = '';
+  url.password = '';
   const redactedSearch = new URLSearchParams();
   for (const [key] of url.searchParams) {
     redactedSearch.append(key, REDACTED_VALUE);

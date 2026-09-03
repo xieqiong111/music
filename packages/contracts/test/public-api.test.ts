@@ -17,6 +17,7 @@ describe('contracts public API', () => {
     expect(APP_ERROR_CODES.INCOMPLETE_PAGINATION).toBe('INCOMPLETE_PAGINATION');
     expect(APP_ERROR_CODES.HTTP_TIMEOUT).toBe('HTTP_TIMEOUT');
     expect(APP_ERROR_CODES.NETWORK_ERROR).toBe('NETWORK_ERROR');
+    expect(APP_ERROR_CODES.RESPONSE_TOO_LARGE).toBe('RESPONSE_TOO_LARGE');
     expect(redactSensitive({ token: 'secret' })).toEqual({ token: '[REDACTED]' });
     expect(redactUrl('https://example.test/?safe=value')).not.toContain('value');
   });

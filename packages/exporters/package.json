@@ -9,6 +9,9 @@
       "import": "./src/index.ts"
     }
   },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
   "dependencies": {
     "@playlist-exporter/contracts": "workspace:*"
   }
