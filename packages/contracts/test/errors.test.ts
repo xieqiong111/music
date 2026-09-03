@@ -48,4 +48,28 @@ describe('AppError', () => {
     });
     expect(details).toEqual(original);
   });
+
+  it('serializes cyclic URL diagnostics safely with centralized credential redaction', () => {
+    const details: Record<string, unknown> = {
+      requestUrl: new URL('https://example.test/path?offset=0&token=url-secret#fragment'),
+      'api-key': 'api-secret',
+      private_key: 'private-secret',
+      pageKey: 'offset:0',
+    };
+    details.self = details;
+    const error = new AppError({
+      code: APP_ERROR_CODES.INCOMPLETE_PAGINATION,
+      message: '分页未完成',
+      technicalDetails: details,
+    });
+
+    const serialized = JSON.stringify(error.toJSON());
+
+    expect(serialized).not.toContain('url-secret');
+    expect(serialized).not.toContain('api-secret');
+    expect(serialized).not.toContain('private-secret');
+    expect(serialized).not.toContain('fragment');
+    expect(serialized).toContain('offset:0');
+    expect(serialized).toContain('[Circular]');
+  });
 });

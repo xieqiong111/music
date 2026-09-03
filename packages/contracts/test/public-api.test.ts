@@ -3,6 +3,8 @@ import {
   APP_ERROR_CODES,
   AppError,
   playlistSchema,
+  redactSensitive,
+  redactUrl,
   trackSchema,
 } from '../src/index.js';
 import type { MusicProvider } from '../src/index.js';
@@ -13,6 +15,10 @@ describe('contracts public API', () => {
     expect(playlistSchema).toBeDefined();
     expect(AppError).toBeDefined();
     expect(APP_ERROR_CODES.INCOMPLETE_PAGINATION).toBe('INCOMPLETE_PAGINATION');
+    expect(APP_ERROR_CODES.HTTP_TIMEOUT).toBe('HTTP_TIMEOUT');
+    expect(APP_ERROR_CODES.NETWORK_ERROR).toBe('NETWORK_ERROR');
+    expect(redactSensitive({ token: 'secret' })).toEqual({ token: '[REDACTED]' });
+    expect(redactUrl('https://example.test/?safe=value')).not.toContain('value');
   });
 
   it('keeps fetchAllTracks typed as a promise of normalized tracks', () => {

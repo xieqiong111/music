@@ -1,5 +1,9 @@
+import { redactSensitive } from './redact.js';
+
 export const APP_ERROR_CODES = Object.freeze({
+  HTTP_TIMEOUT: 'HTTP_TIMEOUT',
   INCOMPLETE_PAGINATION: 'INCOMPLETE_PAGINATION',
+  NETWORK_ERROR: 'NETWORK_ERROR',
 } as const);
 
 export type AppErrorCode =
@@ -13,64 +17,6 @@ export interface AppErrorInit {
   readonly message: string;
   readonly technicalDetails?: TechnicalDetails;
   readonly cause?: unknown;
-}
-
-const REDACTED_VALUE = '[REDACTED]';
-
-function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-  if (normalized === 'authorization') {
-    return true;
-  }
-
-  if (/^(?:set)?cookies?$/.test(normalized)) {
-    return true;
-  }
-
-  return /^(?:access|refresh|id|musicuser)?tokens?$/.test(normalized);
-}
-
-function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
-  if (Array.isArray(value)) {
-    const existing = seen.get(value);
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const redacted: unknown[] = [];
-    seen.set(value, redacted);
-    for (const item of value) {
-      redacted.push(redactValue(item, seen));
-    }
-    return redacted;
-  }
-
-  if (value !== null && typeof value === 'object') {
-    const existing = seen.get(value);
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const redacted: Record<string, unknown> = {};
-    seen.set(value, redacted);
-    for (const [key, child] of Object.entries(value)) {
-      redacted[key] = isSensitiveKey(key)
-        ? REDACTED_VALUE
-        : redactValue(child, seen);
-    }
-    return redacted;
-  }
-
-  return value;
-}
-
-function redactTechnicalDetails(details: TechnicalDetails | undefined): TechnicalDetails | undefined {
-  if (details === undefined) {
-    return undefined;
-  }
-
-  return redactValue(details, new WeakMap<object, unknown>()) as TechnicalDetails;
 }
 
 /** Structured, user-safe application error with redacted diagnostics. */
@@ -88,11 +34,15 @@ export class AppError extends Error {
     if (typeof initOrCode === 'string') {
       super(message ?? initOrCode);
       this.code = initOrCode;
-      this.technicalDetails = redactTechnicalDetails(technicalDetails);
+      this.technicalDetails = technicalDetails === undefined
+        ? undefined
+        : redactSensitive(technicalDetails) as TechnicalDetails;
     } else {
       super(initOrCode.message, { cause: initOrCode.cause });
       this.code = initOrCode.code;
-      this.technicalDetails = redactTechnicalDetails(initOrCode.technicalDetails);
+      this.technicalDetails = initOrCode.technicalDetails === undefined
+        ? undefined
+        : redactSensitive(initOrCode.technicalDetails) as TechnicalDetails;
     }
 
     this.name = 'AppError';
@@ -105,7 +55,7 @@ export class AppError extends Error {
       message: this.message,
       ...(this.technicalDetails === undefined
         ? {}
-        : { technicalDetails: redactTechnicalDetails(this.technicalDetails) }),
+        : { technicalDetails: redactSensitive(this.technicalDetails) as TechnicalDetails }),
     };
   }
 }

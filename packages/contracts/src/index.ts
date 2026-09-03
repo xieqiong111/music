@@ -22,3 +22,4 @@ export type {
 
 export { APP_ERROR_CODES, AppError, isAppError } from './errors.js';
 export type { AppErrorCode, AppErrorInit, TechnicalDetails } from './errors.js';
+export { redactSensitive, redactUrl } from './redact.js';
