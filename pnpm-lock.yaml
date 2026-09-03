@@ -21,6 +21,12 @@ importers:
         specifier: ^4.5.4
         version: 4.5.4
 
+  packages/exporters:
+    dependencies:
+      '@playlist-exporter/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
 packages:
 
   '@jridgewell/sourcemap-codec@1.6.0':
