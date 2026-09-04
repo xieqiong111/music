@@ -1,0 +1,27 @@
+# 让构建上下文保持最小：不携带本机依赖/产物/凭证/文档。
+node_modules/
+**/node_modules/
+
+.git/
+.gitignore
+.gitattributes
+.worktrees/
+.superpowers/
+.editorconfig
+
+# 本机构建产物与测试输出（容器内重新生成）。
+apps/web/dist/
+apps/server/dist/
+coverage/
+playwright-report/
+test-results/
+
+# 数据、导出文件与文档不进入镜像。
+data/
+outputs/
+docs/
+
+# 日志与本地环境文件（绝不把真实凭证带进构建上下文）。
+*.log
+.env
+.env.*

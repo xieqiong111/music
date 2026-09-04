@@ -1,3 +1,5 @@
+import { statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve, type ServerType } from '@hono/node-server';
 import { AppError, type ProviderId } from '@playlist-exporter/contracts';
@@ -47,9 +49,26 @@ const defaultLogger = (event: ServerLogEvent): void => {
   process.stdout.write(`${JSON.stringify(event)}\n`);
 };
 
+// Optional PWA static hosting: unset/empty WEB_DIST keeps the server API-only.
+// A configured value must resolve to an existing directory before any socket opens.
+export const resolveWebDistRoot = (raw: string | undefined): string | undefined => {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const root = resolve(raw);
+  let stats;
+  try {
+    stats = statSync(root);
+  } catch {
+    throw new Error(`WEB_DIST 目录不存在: ${root}`);
+  }
+  if (!stats.isDirectory()) throw new Error(`WEB_DIST 不是目录: ${root}`);
+  return root;
+};
+
 export const startServer = (options: StartServerOptions = {}): ServerRuntime => {
   // Configuration must be fully validated before any socket can be created.
-  const config = loadServerConfig(options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const config = loadServerConfig(env);
+  const webDistRoot = resolveWebDistRoot(env.WEB_DIST);
   const restrictedFetch = createRestrictedFetch(options.fetchImpl ?? globalThis.fetch);
   const http = createHttpTransport({
     fetchImpl: restrictedFetch,
@@ -71,6 +90,7 @@ export const startServer = (options: StartServerOptions = {}): ServerRuntime => 
     http,
     jobs,
     logger: options.logger ?? defaultLogger,
+    webDistRoot,
   });
   const server = (options.serveImpl ?? serve)({
     fetch: app.fetch,

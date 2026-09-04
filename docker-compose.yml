@@ -1,0 +1,65 @@
+# 跨平台流媒体歌单导出工具 — Docker Compose（NAS/本机自托管）
+#
+# 快速开始：
+#   1. cp .env.example .env，并在 .env 中设置强随机 ACCESS_TOKEN（必填）
+#      生成命令：node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+#   2. docker compose up -d --build     # 默认仅绑定宿主机 127.0.0.1:4319
+#   3. 浏览器访问 http://127.0.0.1:4319/（PWA），API 调用需带 Authorization: Bearer <ACCESS_TOKEN>
+#
+# 安全模型：
+#   - 容器内 HOST=0.0.0.0 是刻意设计：容器网络命名空间隔离本身就是边界，
+#     宿主机回环由端口映射 "127.0.0.1:4319:4319" 保证（外部/局域网无法访问）。
+#   - 因此 compose 下服务端必然是非 loopback 监听，按既定安全不变量
+#     ACCESS_TOKEN 必填：缺失或为空时 compose 会直接报错拒绝启动。
+#   - 根文件系统只读（read_only），可写目录只有 tmpfs /tmp 与数据卷 /data。
+
+x-app-common: &app-common
+  build: .
+  image: playlist-exporter:local
+  environment:
+    # 容器内监听所有接口（容器隔离即边界）；宿主机暴露范围由 ports 决定。
+    HOST: 0.0.0.0
+    # 容器内端口固定 4319（与 EXPOSE/healthcheck 一致）。
+    PORT: 4319
+    # PWA 静态资源由 Node 服务端托管。
+    WEB_DIST: /app/web/dist
+    # 从 .env 读取；未设置/为空时直接报错（安全不变量）。
+    ACCESS_TOKEN: ${ACCESS_TOKEN:?请在 .env 中设置 ACCESS_TOKEN}
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  volumes:
+    # 数据目录（导出文件等）。容器内以 UID 10001 写入，宿主机目录请保证可写。
+    - ${DATA_DIR:-./data}:/data
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  healthcheck:
+    # alpine 无 curl/wget，用 Node 内置 fetch 探活（与 Dockerfile 一致）。
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||4319)+'/healthz').then(r=>{if(!r.ok)throw 0}).catch(()=>process.exit(1))"]
+    interval: 30s
+    timeout: 5s
+    start_period: 10s
+    retries: 3
+
+services:
+  # 默认服务：仅宿主机回环可访问。
+  app:
+    <<: *app-common
+    container_name: playlist-exporter
+    ports:
+      - "127.0.0.1:${PORT:-4319}:4319"
+
+  # ⚠️ LAN 模式警告 ⚠️
+  # app-lan 把端口绑定到宿主机所有网卡（0.0.0.0），局域网内任何设备都能访问本服务。
+  # 仅当你完全理解暴露风险时才启用，且必须使用强 ACCESS_TOKEN（≥32 字节随机值）：
+  #   docker compose --profile lan up -d app-lan
+  # 不要同时运行 app 与 app-lan（宿主机端口冲突）。
+  app-lan:
+    <<: *app-common
+    profiles: ["lan"]
+    container_name: playlist-exporter-lan
+    ports:
+      - "4319:4319"

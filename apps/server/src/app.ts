@@ -6,8 +6,10 @@ import {
   type ProviderId,
 } from '@playlist-exporter/contracts';
 import { exportPlaylist, type ExportOptions } from '@playlist-exporter/exporters';
+import { serveStatic, type ServeStaticOptions } from '@hono/node-server/serve-static';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import type { MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import { hasValidBearer, isAllowedOrigin } from './auth.js';
 import type { ServerConfig } from './config.js';
@@ -32,6 +34,7 @@ export interface ServerAppDependencies {
   readonly jobs: JobRegistry;
   readonly logger?: (event: ServerLogEvent) => void;
   readonly requestIdFactory?: () => string;
+  readonly webDistRoot?: string;
 }
 
 const inspectSchema = z.object({
@@ -104,6 +107,33 @@ const encodedFilename = (filename: string): string =>
 
 const allowedPreflightHeaders = new Set(['authorization', 'content-type']);
 const allowedPreflightMethods = new Set(['GET', 'POST', 'DELETE']);
+
+const ASSET_CACHE = 'public, max-age=31536000, immutable';
+const ENTRY_CACHE = 'no-cache';
+const ICON_CACHE = 'public, max-age=604800';
+
+const cachedStatic = (
+  cacheControl: string,
+  options: ServeStaticOptions,
+): MiddlewareHandler => {
+  const serve = serveStatic(options);
+  return async (context, next) => {
+    // Must be set before serving so it lands on the finalized response.
+    context.header('Cache-Control', cacheControl);
+    // serveStatic returns the Response when it serves a file and falls back to
+    // next() when it does not; both cases must be propagated to the composer.
+    return serve(context, next);
+  };
+};
+
+const registerWebDist = (app: Hono<{ Variables: Variables }>, root: string): void => {
+  app.get('/', cachedStatic(ENTRY_CACHE, { root, index: 'index.html' }));
+  app.get('/index.html', cachedStatic(ENTRY_CACHE, { root, path: 'index.html' }));
+  app.use('/assets/*', cachedStatic(ASSET_CACHE, { root }));
+  app.get('/manifest.webmanifest', cachedStatic(ENTRY_CACHE, { root, path: 'manifest.webmanifest' }));
+  app.use('/icons/*', cachedStatic(ICON_CACHE, { root }));
+  app.get('/sw.js', cachedStatic(ENTRY_CACHE, { root, path: 'sw.js' }));
+};
 
 export const createServerApp = (dependencies: ServerAppDependencies) => {
   const requestIdFactory = dependencies.requestIdFactory ?? randomUUID;
@@ -282,6 +312,10 @@ export const createServerApp = (dependencies: ServerAppDependencies) => {
       },
     });
   });
+
+  if (dependencies.webDistRoot !== undefined) {
+    registerWebDist(app, dependencies.webDistRoot);
+  }
 
   app.notFound(context => errorResponse(context, 404, 'NOT_FOUND', '未找到该接口'));
   app.onError((_error, context) =>
