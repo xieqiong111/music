@@ -190,6 +190,43 @@ describe('local NAS API', () => {
     jobs.close();
   });
 
+  it('runs inspect against a registered qq-music provider and keeps apple-music unsupported', async () => {
+    const qq = { ...provider(), id: 'qq-music' as const };
+    const jobs = createJobRegistry({
+      maxConcurrent: 2,
+      maxQueued: 10,
+      terminalTtlMs: 60_000,
+      idFactory: () => 'job-1',
+    });
+    const app = createServerApp({
+      config: config(),
+      providers: new Map([['netease', provider()], ['qq-music', qq]]),
+      http: noNetwork,
+      jobs,
+      requestIdFactory: () => 'request-1',
+    });
+
+    const accepted = await app.request('/api/playlists/inspect', {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ provider: 'qq-music', input: { value: '7729596131' } }),
+    });
+    expect(accepted.status).toBe(202);
+    expect(accepted.headers.get('location')).toBe('/api/jobs/job-1');
+    await flush();
+    expect(qq.validateInput).toHaveBeenCalled();
+    expect(qq.fetchPlaylist).toHaveBeenCalled();
+
+    const unsupported = await app.request('/api/playlists/inspect', {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ provider: 'apple-music', input: { value: '42' } }),
+    });
+    expect(unsupported.status).toBe(422);
+    expect(await unsupported.json()).toMatchObject({ code: 'UNSUPPORTED_PROVIDER' });
+    jobs.close();
+  });
+
   it('enforces the 1 MiB body limit before parsing or provider work', async () => {
     const selected = provider();
     const { app, jobs } = createFixture({ provider: selected });
@@ -237,7 +274,11 @@ describe('local NAS API', () => {
     expect(cancelled.status).toBe(202);
     expect(await cancelled.json()).toMatchObject({ jobId: 'job-1', status: 'cancelled' });
     expect(runningContext.signal.aborted).toBe(true);
-    expect(JSON.stringify(jobs.get('job-1'))).not.toContain('42');
+    // The snapshot must not expose the submitted playlist input. (A raw
+    // `not.toContain('42')` was flaky: ISO timestamps can contain "42".)
+    const snapshot = JSON.stringify(jobs.get('job-1'));
+    expect(snapshot).not.toContain('"input"');
+    expect(snapshot).not.toContain('"value"');
     jobs.close();
   });
 

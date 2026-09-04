@@ -23,7 +23,7 @@ const providers: ReadonlyArray<{
     id: 'qq-music',
     name: zhCN.providerQQ,
     hint: zhCN.providerQQHint,
-    available: false,
+    available: true,
   },
 ];
 

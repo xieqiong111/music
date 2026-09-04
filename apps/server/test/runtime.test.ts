@@ -17,6 +17,9 @@ describe('server runtime boundary', () => {
       .resolves.toMatchObject({ status: 200 });
     await expect(restricted('https://163cn.tv/abc', { redirect: 'manual' }))
       .resolves.toMatchObject({ status: 200 });
+    await expect(restricted(
+      'https://i.y.qq.com/qzone-music/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?disstid=7729596131',
+    )).resolves.toMatchObject({ status: 200 });
     expect(upstream.mock.calls[0]?.[1]).toMatchObject({ redirect: 'error' });
     for (const url of [
       'http://music.163.com/api/v6/playlist/detail',
@@ -24,11 +27,14 @@ describe('server runtime boundary', () => {
       'https://music.163.com.evil.example/api',
       'https://user:pass@music.163.com/api',
       'https://music.163.com:8443/api',
+      // Only the probed QQ endpoint host is allowed; sibling QQ hosts stay blocked.
+      'https://u.y.qq.com/cgi-bin/musicu.fcg',
+      'https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_iids_df.fcg',
     ]) {
       await expect(restricted(url)).rejects.toMatchObject({
         code: 'EGRESS_NOT_ALLOWED',
       });
     }
-    expect(upstream).toHaveBeenCalledTimes(2);
+    expect(upstream).toHaveBeenCalledTimes(3);
   });
 });

@@ -34,6 +34,10 @@ Before any reuse, the exact source repository, immutable commit, file/function, 
 | Listen1 network/auth layer | https://github.com/listen1/listen1_chrome_extension | Browser-global/cookie coupling, unproven QQ completeness, and platform-interface risk make direct reuse unsuitable |
 | music-likes-sync write/AI/server layer | https://github.com/HomoLand/music-likes-sync | Out of scope for a read-only exporter and lacks required LAN authentication boundary |
 
+## QQ public endpoint research (2026-09-05)
+
+The QQ Music public-playlist adapter (`packages/provider-qq`) is an **original implementation**. Its endpoint selection is grounded in a first-party probe executed locally on 2026-09-05, recorded in `outputs/research/2026-09-05-qq-public-api-probe.md` (anonymous read of public playlists; a 1240-track public playlist was paged completely during the probe, confirming the endpoint used in production wiring: `i.y.qq.com`). Community API documentation projects — copws/qq-music-api, jsososo/QQMusicApi, and Rain120/qq-music-api — were consulted as **endpoint leads only**. No code, fixture, credential, or configuration from any of these projects was copied, and no dependency from them was installed; copws/qq-music-api remains listed under "Excluded or blocked" above (no clear repository license).
+
 ## Notice procedure for future changes
 
 For every incorporated component, add an entry containing:

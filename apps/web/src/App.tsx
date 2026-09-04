@@ -27,6 +27,10 @@ const DEFAULT_OPTIONS: ExportOptions = {
   csvBom: false,
 };
 
+// Providers wired end-to-end in this build; mirrors the server's provider
+// registry (netease + qq-music). Anything outside this set stays submit-locked.
+const SUPPORTED_PROVIDERS: ReadonlySet<ProviderId> = new Set<ProviderId>(['netease', 'qq-music']);
+
 const sleep = (delayMs: number): Promise<void> =>
   new Promise(resolve => setTimeout(resolve, delayMs));
 
@@ -89,7 +93,7 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
   const detected = detectProvider(input);
   const effectiveProvider = detected ?? provider;
   const active = status === 'queued' || status === 'running';
-  const canSubmit = input.trim() !== '' && effectiveProvider === 'netease' && !active;
+  const canSubmit = input.trim() !== '' && SUPPORTED_PROVIDERS.has(effectiveProvider) && !active;
 
   const changeInput = (value: string): void => {
     setInput(value);
@@ -102,7 +106,7 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
       setError(fallbackError(zhCN.emptyInput));
       return;
     }
-    if (effectiveProvider !== 'netease') {
+    if (!SUPPORTED_PROVIDERS.has(effectiveProvider)) {
       setError(fallbackError(zhCN.unavailableProvider));
       return;
     }

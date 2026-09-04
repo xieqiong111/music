@@ -2,14 +2,19 @@ import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve, type ServerType } from '@hono/node-server';
-import { AppError, type ProviderId } from '@playlist-exporter/contracts';
+import { AppError, type MusicProvider, type ProviderId } from '@playlist-exporter/contracts';
 import { createHttpTransport } from '@playlist-exporter/core';
 import { NeteaseProvider } from '@playlist-exporter/provider-netease';
+import { QqProvider } from '@playlist-exporter/provider-qq';
 import { createServerApp, type ServerLogEvent } from './app.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
 import { createJobRegistry, type JobRegistry } from './jobs.js';
 
-const ALLOWED_EGRESS_HOSTS = new Set(['music.163.com', 'y.music.163.com', '163cn.tv']);
+// Outbound egress is pinned to the exact metadata endpoints each registered
+// provider uses: QQ playlist reads only ever target i.y.qq.com (verified by
+// outputs/research/2026-09-05-qq-public-api-probe.md); u.y.qq.com /
+// c.y.qq.com are not used by this project and stay blocked.
+const ALLOWED_EGRESS_HOSTS = new Set(['music.163.com', 'y.music.163.com', '163cn.tv', 'i.y.qq.com']);
 
 const egressError = (): AppError => new AppError({
   code: 'EGRESS_NOT_ALLOWED',
@@ -81,8 +86,9 @@ export const startServer = (options: StartServerOptions = {}): ServerRuntime => 
     maxQueued: config.maxQueuedJobs,
     terminalTtlMs: config.jobTtlMs,
   });
-  const providers = new Map<ProviderId, NeteaseProvider>([
+  const providers = new Map<ProviderId, MusicProvider>([
     ['netease', new NeteaseProvider()],
+    ['qq-music', new QqProvider()],
   ]);
   const app = createServerApp({
     config,

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
-import type { Playlist, Track } from '@playlist-exporter/contracts';
+import type { Playlist, ProviderId, Track } from '@playlist-exporter/contracts';
 
 // 用户可见文案与 src/i18n/zh-CN.ts 保持一致；E2E 以黑盒方式验证界面文本。
 const L = {
@@ -10,6 +10,7 @@ const L = {
   completed: '歌单读取完成',
   cancelled: '任务已取消',
   detectedNetease: '已识别：网易云音乐',
+  detectedQQ: '已识别：QQ 音乐',
   previewTitle: '导出预览',
   exportButton: '导出文件',
   totalTracks: (count: number): string => `共 ${count} 首歌曲`,
@@ -17,7 +18,9 @@ const L = {
 
 const PLAYLIST_INPUT =
   'https://music.163.com/#/playlist?id=2064224062&userid=test';
+const QQ_PLAYLIST_INPUT = 'https://y.qq.com/n/ryqq/playlist/7729596131';
 const TRACK_COUNT = 1001;
+const QQ_TRACK_COUNT = 12;
 const ISO_TIME = '2026-01-01T00:00:00.000Z';
 
 const track = (title: string, artists: string[], position: number): Track => ({
@@ -57,6 +60,43 @@ const playlist = (name: string): Playlist => ({
   warnings: [],
 });
 
+const qqTrack = (title: string, artists: string[], position: number): Track => ({
+  title,
+  artists,
+  source: 'qq-music',
+  position,
+  availability: 'available',
+  warnings: [],
+});
+
+// 12 首合成 QQ 歌单：含 1 个重复曲（占位 3/4 两行）与带 Emoji 的歌名。
+function makeQqTracks(): Track[] {
+  const tracks: Track[] = [];
+  for (let position = 0; position < QQ_TRACK_COUNT; position += 1) {
+    if (position === 0) {
+      tracks.push(qqTrack('QQ 序曲 🎶', ['歌手甲', '歌手乙'], position));
+    } else if (position === 3 || position === 4) {
+      tracks.push(qqTrack('重复曲目 🔁', ['同一歌手'], position));
+    } else if (position === QQ_TRACK_COUNT - 1) {
+      tracks.push(qqTrack(`第${QQ_TRACK_COUNT}首 · 终曲 🎵`, ['歌手十二'], position));
+    } else {
+      tracks.push(qqTrack(`第${position + 1}首 - 测试曲目 🎧`, [`歌手${position + 1}`], position));
+    }
+  }
+  return tracks;
+}
+
+const qqPlaylist = (name: string): Playlist => ({
+  id: '7729596131',
+  name,
+  creator: '测试创建者',
+  source: 'qq-music',
+  total: QQ_TRACK_COUNT,
+  tracks: makeQqTracks(),
+  complete: true,
+  warnings: [],
+});
+
 // 与 packages/exporters TXT 规则一致的独立期望构造，避免与被测实现共享代码。
 const txtBody = (tracks: readonly Track[]): string =>
   `${tracks.map(item => `${item.title} - ${item.artists.join('、')}`).join('\n')}\n`;
@@ -92,12 +132,13 @@ const newCapture = (): JobCapture => ({
 });
 
 const jobSnapshot = (
+  provider: ProviderId,
   jobId: string,
   status: string,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> => ({
   jobId,
-  provider: 'netease',
+  provider,
   status,
   createdAt: ISO_TIME,
   updatedAt: ISO_TIME,
@@ -107,6 +148,7 @@ const jobSnapshot = (
 async function mockPlaylistApi(
   page: Page,
   options: {
+    readonly provider: ProviderId;
     readonly jobId: string;
     readonly playlist: Playlist;
     readonly filename: string;
@@ -115,7 +157,7 @@ async function mockPlaylistApi(
     readonly capture: JobCapture;
   },
 ): Promise<void> {
-  const { jobId, playlist: mocked, filename, completeAfterPolls, capture } = options;
+  const { provider, jobId, playlist: mocked, filename, completeAfterPolls, capture } = options;
 
   await page.route('**/api/playlists/inspect', async route => {
     capture.inspectBodies.push(
@@ -142,12 +184,12 @@ async function mockPlaylistApi(
     capture.polls += 1;
     const completed = completeAfterPolls !== null && capture.polls >= completeAfterPolls;
     const snapshot = completed
-      ? jobSnapshot(jobId, 'completed', {
+      ? jobSnapshot(provider, jobId, 'completed', {
           finishedAt: ISO_TIME,
           progress: { phase: 'completed', completed: mocked.total, total: mocked.total },
           result: mocked,
         })
-      : jobSnapshot(jobId, 'running', {
+      : jobSnapshot(provider, jobId, 'running', {
           progress: {
             phase: 'fetching',
             completed: Math.min(capture.polls * 251, mocked.total),
@@ -183,6 +225,7 @@ test('导出 1001 首歌单：分页进度、顺序、首末条、UTF-8 无 BOM 
   const filename = `netease_${name}_${localDate()}.txt`;
   const capture = newCapture();
   await mockPlaylistApi(page, {
+    provider: 'netease',
     jobId: 'job-1001',
     playlist: mocked,
     filename,
@@ -249,6 +292,7 @@ test('取消运行中的任务会调用 DELETE，且不会导出部分结果', a
   const mocked = playlist('深夜放送 🎧 夜に駆ける');
   const capture = newCapture();
   await mockPlaylistApi(page, {
+    provider: 'netease',
     jobId: 'job-cancel',
     playlist: mocked,
     filename: 'unused.txt',
@@ -292,6 +336,7 @@ test('导出文件名清理非法字符并保留平台、歌单名与日期', as
   const filename = `netease_${expectSanitized(rawName)}_${localDate()}.txt`;
   const capture = newCapture();
   await mockPlaylistApi(page, {
+    provider: 'netease',
     jobId: 'job-sanitize',
     playlist: mocked,
     filename,
@@ -321,5 +366,71 @@ test('导出文件名清理非法字符并保留平台、歌单名与日期', as
   const bytes = await readFile(savedPath);
   expect([...bytes.slice(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  expect(text).toBe(txtBody(mocked.tracks));
+});
+
+test('导出 QQ 音乐 12 首歌单：链接识别、顺序、重复曲、UTF-8 无 BOM LF、文件名与真实下载', async ({ page }) => {
+  const name = '深夜 QQ 放送 🎶';
+  const mocked = qqPlaylist(name);
+  const filename = `qq-music_${name}_${localDate()}.txt`;
+  const capture = newCapture();
+  await mockPlaylistApi(page, {
+    provider: 'qq-music',
+    jobId: 'job-qq-12',
+    playlist: mocked,
+    filename,
+    completeAfterPolls: 2,
+    capture,
+  });
+
+  await page.goto('/');
+  const input = page.locator('#playlist-input');
+  await input.fill(QQ_PLAYLIST_INPUT);
+  await expect(page.getByText(L.detectedQQ)).toBeVisible();
+  await page.getByRole('button', { name: L.inspectButton }).click();
+
+  await expect(page.getByText(L.completed)).toBeVisible();
+  await expect(page.getByText(L.totalTracks(QQ_TRACK_COUNT))).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'QQ 序曲 🎶' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '重复曲目 🔁' })).toHaveCount(2);
+
+  expect(capture.inspectBodies[0]).toEqual({
+    provider: 'qq-music',
+    input: { value: QQ_PLAYLIST_INPUT },
+  });
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: L.exportButton }).click();
+  const download = await downloadPromise;
+
+  // 文件名包含平台、歌单名与日期
+  expect(download.suggestedFilename()).toBe(filename);
+  expect(filename).toMatch(/^qq-music_.+_\d{4}-\d{2}-\d{2}\.txt$/u);
+  expect(filename).toContain(name);
+  expect(capture.exportBodies[0]?.jobId).toBe('job-qq-12');
+  expect(capture.exportBodies[0]?.options?.format).toBe('txt');
+  expect(capture.exportBodies[0]?.options?.lineEnding).toBe('lf');
+
+  const savedPath = test.info().outputPath('downloaded-qq-playlist.txt');
+  await download.saveAs(savedPath);
+  const bytes = await readFile(savedPath);
+
+  // 无 BOM
+  expect([...bytes.slice(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
+  // 严格 UTF-8 解码成功（含 Emoji 与 CJK）
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  // LF 换行：无 CR 且以 LF 结尾
+  expect(text).not.toContain('\r');
+  expect(text.endsWith('\n')).toBe(true);
+
+  const lines = text.split('\n');
+  expect(lines).toHaveLength(QQ_TRACK_COUNT + 1);
+  expect(lines.at(-1)).toBe('');
+  expect(lines[0]).toBe('QQ 序曲 🎶 - 歌手甲、歌手乙');
+  expect(lines[QQ_TRACK_COUNT - 1]).toBe(`第${QQ_TRACK_COUNT}首 · 终曲 🎵 - 歌手十二`);
+  // 重复歌曲按原顺序连续保留两行
+  expect(lines[3]).toBe('重复曲目 🔁 - 同一歌手');
+  expect(lines[4]).toBe('重复曲目 🔁 - 同一歌手');
+  // 下载字节与响应一致，全部 12 行按歌单原始顺序排列
   expect(text).toBe(txtBody(mocked.tracks));
 });

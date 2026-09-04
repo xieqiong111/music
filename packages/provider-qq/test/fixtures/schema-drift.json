@@ -1,0 +1,12 @@
+{
+  "code": 0,
+  "subcode": 0,
+  "cdlist": [
+    {
+      "disstid": "42",
+      "dissname": null,
+      "songnum": "3",
+      "songlist": "not-an-array"
+    }
+  ]
+}

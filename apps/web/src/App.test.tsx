@@ -66,11 +66,27 @@ describe('App', () => {
     render(<App service={service()} />);
 
     expect(screen.getByRole('button', { name: /Apple Music/ })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /QQ 音乐/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /QQ 音乐/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: /网易云音乐/ })).toBeEnabled();
     const input = screen.getByLabelText('歌单链接或 ID');
     await user.type(input, 'https://music.163.com/playlist?id=12345');
     expect(screen.getByText('已识别：网易云音乐')).toBeInTheDocument();
+  });
+
+  it('auto-detects a QQ playlist link and submits it to the qq-music provider', async () => {
+    const mockService = service();
+    const user = userEvent.setup();
+    render(<App service={mockService} />);
+
+    expect(screen.getByRole('button', { name: /Apple Music/ })).toBeDisabled();
+    const input = screen.getByLabelText('歌单链接或 ID');
+    await user.type(input, 'https://y.qq.com/n/ryqq/playlist/7729596131');
+    expect(screen.getByText('已识别：QQ 音乐')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '读取歌单' }));
+    expect(mockService.createInspection).toHaveBeenCalledWith(
+      'qq-music',
+      'https://y.qq.com/n/ryqq/playlist/7729596131',
+    );
   });
 
   it('loads a playlist, preserves unavailable tracks in preview, and exports selected options', async () => {

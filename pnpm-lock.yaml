@@ -32,6 +32,9 @@ importers:
       '@playlist-exporter/provider-netease':
         specifier: workspace:*
         version: link:../../packages/provider-netease
+      '@playlist-exporter/provider-qq':
+        specifier: workspace:*
+        version: link:../../packages/provider-qq
       hono:
         specifier: ^4.13.5
         version: 4.13.5
@@ -133,6 +136,22 @@ importers:
       zod:
         specifier: ^4.5.4
         version: 4.5.4
+
+  packages/provider-qq:
+    dependencies:
+      '@playlist-exporter/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@playlist-exporter/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
+    devDependencies:
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2))
 
 packages:
 
