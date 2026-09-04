@@ -1,0 +1,78 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  // productName 跨平台安全命名：纯 ASCII 字母 + 空格（schema 约束 ^[^/\\:*?"<>|]+$），
+  // NSIS/MSI 安装名、macOS .app/DMG 名、Linux 包名均可直接安全派生；不含版本号、不含中文。
+  "productName": "Playlist Exporter",
+  "version": "0.1.0",
+  // 反向域标识。com.localfirst 取“本地优先（local-first）”语义字面量，刻意不对应任何真实商标域名。
+  // 注意：Android applicationId 不允许连字符，tauri android init 遇连字符会失败
+  // （tauri-apps/tauri#9707）。Android 构建时由同目录 tauri.android.conf.json 覆盖为
+  // 无连字符变体 com.localfirst.playlistexporter（仅字母/数字/点，同时满足 Tauri 与 Android 规则）。
+  "identifier": "com.localfirst.playlist-exporter",
+
+  "build": {
+    // dev：先启动 apps/web 的 Vite 开发服务器（pnpm workspace filter 命令，从任何子目录可用）。
+    // devUrl 与 apps/web/vite.config.ts 的 server.host/port 对齐（127.0.0.1:4320，已在主仓库核实）。
+    "beforeDevCommand": "pnpm --filter @playlist-exporter/web dev",
+    // build：tauri build 打包前先产出 apps/web/dist（Vite 多页 PWA 静态产物）。
+    "beforeBuildCommand": "pnpm --filter @playlist-exporter/web build",
+    "devUrl": "http://127.0.0.1:4320",
+    // 相对“本配置文件所在目录”（apps/desktop/src-tauri/）解析：
+    // src-tauri/../../ = 仓库根，因此 ../../web/dist 即 apps/web/dist。
+    "frontendDist": "../../web/dist"
+  },
+
+  "app": {
+    // 安全默认：不注入 window.__TAURI__ 全局对象。前端必须显式 import
+    // @tauri-apps/api 与 @tauri-apps/plugin-dialog（apps/web 的接入属后续任务，白名单限制）。
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        // label 须与 capabilities/default.json 的 "windows": ["main"] 一致
+        "label": "main",
+        "title": "Playlist Exporter",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        // 不启用透明/无边框/全屏定制，保持默认安全面；无多窗口
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      // 最小化 CSP：
+      // - default-src 'self'：脚本/样式/字体/worker 仅限应用自身源；
+      // - img-src 'self' data:：允许内联 data: 图片（PWA 图标/占位图）；
+      // - connect-src 'self' http://127.0.0.1:4319：仅回环本地服务（apps/server 的本地端口）。
+      //   CSP 为白名单语义：白名单之外的一切远程主机连接都会被拒绝，无需显式 deny 指令。
+      // - Tauri 会自动向 connect-src 追加 IPC 所需源（Windows 上为 http://ipc.localhost，
+      //   由 dangerousDisableAssetCspModification 默认 false 控制）；不要手工放宽本行。
+      "csp": "default-src 'self'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:4319"
+    }
+  },
+
+  "bundle": {
+    "active": true,
+    // 基础 targets 用 "all"（按当前平台解析为全部适用目标）。
+    // 精确目标由平台覆盖文件给出：
+    //   tauri.windows.conf.json -> ["nsis", "msi"]
+    //   tauri.macos.conf.json   -> ["app", "dmg"]
+    // Android 不属于 bundle targets：使用 `tauri android build` 产出 APK（见 README）。
+    "targets": "all",
+    // 【未签名说明】本阶段不配置任何签名证书、不做公证：
+    // - Windows：未签名 exe/安装包将触发 SmartScreen“未知发布者”警告，用户需手动跳过；
+    // - macOS：未公证的 .app/.dmg 被 Gatekeeper 拦截（首次打开需右键绕过或 `xattr -cr`）；
+    // - Android：release APK 无签名无法安装；调试构建默认使用 debug keystore 自动签名。
+    // 代码签名与公证属后续任务（需要 OV/EV 证书与 Apple Developer 账号），见 README。
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

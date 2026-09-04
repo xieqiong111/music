@@ -1,0 +1,56 @@
+# 跨平台流媒体歌单导出工具 —— 桌面/Android 壳（Tauri 2 稳定线）
+#
+# 版本策略：依赖只锁定主版本 "2"（caret 语义，首次构建时解析到最新 2.x 稳定版）。
+# 联网核对得到的已知稳定版本（2026-09，供审查参考；最终以构建时解析为准）：
+#   tauri                 2.10.2（crates.io max stable，crate 元数据 MSRV rustc 1.77.2）
+#   tauri-build            2.x（与 tauri 同仓库同版本线）
+#   tauri-plugin-dialog    2.7.3
+#   tauri-cli              2.11.4（npm 包 @tauri-apps/cli 同号发布；CLI 自身声明 rust-version 1.90）
+# 若需可复现构建，请在首次构建成功后提交 Cargo.lock 冻结精确版本。
+
+[package]
+name = "playlist-exporter-desktop"
+version = "0.1.0"
+description = "跨平台流媒体歌单导出工具的桌面与 Android 壳（Tauri 2）"
+edition = "2021"
+# 与 tauri 2.10.x 元数据的 MSRV 对齐；若 tauri-cli/依赖链要求更高，按 rustup stable 调整
+rust-version = "1.77.2"
+
+# Tauri 2 约定：lib（供桌面 bin 与 Android/iOS cdylib 复用同一构建）+ bin（桌面入口）
+[lib]
+name = "playlist_exporter_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "playlist-exporter-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+# config-json5：tauri.conf.json 内含注释（JSON5）。tauri-cli 2.11.x 已默认启用该解析；
+# 但 tauri-build 默认只解析严格 JSON，必须显式开启此 feature，否则 build.rs 阶段会解析失败。
+tauri-build = { version = "2", features = ["config-json5"] }
+
+[dependencies]
+# config-json5：generate_context! 宏在编译期解析同一份带注释的 tauri.conf.json
+tauri = { version = "2", features = ["config-json5"] }
+# 系统保存对话框（前端还需接入 @tauri-apps/plugin-dialog JS 包，见 apps/desktop/README.md）
+tauri-plugin-dialog = "2"
+# opener 插件（按需）：本阶段导出完全本地生成、无打开外部链接的需求，故不引入。
+# 后续如需（例如打开服务商授权页/帮助页）：
+#   1) 取消下一行注释；
+#   2) 在 src/lib.rs 的 Builder 链上注册 .plugin(tauri_plugin_opener::init())；
+#   3) 在 capabilities/default.json 增加 opener:allow-open-url，并用 URL 前缀白名单限定目标。
+# tauri-plugin-opener = "2"
+# serde / serde_json：待引入自定义 Rust command 时再添加
+# serde = { version = "1", features = ["derive"] }
+# serde_json = "1"
+
+[profile.release]
+# 体积优先的发布优化。前提：本 Cargo.toml 是其所在 cargo workspace 的根清单——
+# 当前 pnpm monorepo 无根 Cargo.toml，src-tauri 即独立 package，本节生效；
+# 若未来仓库根出现 cargo workspace，需把本节迁移到 workspace 根清单，否则 cargo 会忽略并告警。
+codegen-units = 1
+lto = true
+opt-level = "s"      # 如更看重运行时性能可改回 3
+panic = "abort"
+strip = true         # 移除调试符号（stable rustc 支持）

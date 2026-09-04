@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口最小能力集。permissions 仅含：(1) core:default —— Tauri 核心默认集（事件监听/发射、窗口查询与事件、路径解析等只读能力；不含文件系统/网络等任何插件权限）；(2) dialog:allow-save —— 仅『保存文件』系统对话框。刻意未用 dialog:default（那会额外放行 open/message/ask/confirm）。$schema 指向的 ../gen/schemas/ 目录由 tauri CLI 首次 build/dev 时自动生成。权限名以 Tauri 2 stable 为准：可用 `pnpm --filter @playlist-exporter/desktop exec tauri permission list` 或 https://v2.tauri.app/plugin/dialog/ 核对。（注：capabilities 文件按严格 JSON 解析，说明只能写在本字段，不能写 // 注释。）",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-save"]
+}
