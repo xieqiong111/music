@@ -25,6 +25,7 @@ The Phase 1 candidate ledger is preserved in `outputs/THIRD_PARTY_NOTICES.md`. B
 | @types/react-dom | 19.2.7 | https://github.com/DefinitelyTyped/DefinitelyTyped | MIT | Development-only React DOM type declarations |
 | @playwright/test | 1.62.1 | https://github.com/microsoft/playwright | Apache-2.0 | Test-only end-to-end browser testing (Chromium headless shell); not part of any build artifact |
 | @types/node | 24.13.3 | https://github.com/DefinitelyTyped/DefinitelyTyped | MIT | Development-only Node.js type declarations for e2e tooling |
+| @tauri-apps/cli | 2.11.4 | https://github.com/tauri-apps/tauri | Apache-2.0 or MIT | Build-time only desktop/mobile packaging CLI for apps/desktop; its code is not bundled into any product artifact |
 
 ### Apache-2.0 license notice (@playwright/test)
 

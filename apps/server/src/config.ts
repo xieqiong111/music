@@ -4,6 +4,7 @@ export interface ServerConfig {
   readonly host: string;
   readonly port: number;
   readonly accessToken: string | undefined;
+  readonly appleDeveloperToken: string | undefined;
   readonly allowedOrigins: readonly string[];
   readonly maxBodyBytes: number;
   readonly maxConcurrentJobs: number;
@@ -60,6 +61,21 @@ const validateToken = (raw: string | undefined): string | undefined => {
   return raw;
 };
 
+/**
+ * Apple Music BYO developer token (Preview). The value only ever lives in the
+ * process and is forwarded exclusively as the Authorization request header to
+ * api.music.apple.com; it must never be logged or echoed into errors. A
+ * blank/whitespace value means "not configured" so stray empty env exports do
+ * not half-enable the provider; a real value is returned untrimmed.
+ */
+const validateAppleDeveloperToken = (raw: string | undefined): string | undefined => {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  if (/[\u0000-\u001f\u007f]/u.test(raw) || Buffer.byteLength(raw, 'utf8') > 8192) {
+    throw configError('APPLE_DEVELOPER_TOKEN', '格式无效');
+  }
+  return raw;
+};
+
 const parseOrigin = (candidate: string): string => {
   if (candidate === '' || candidate === '*' || candidate === 'null') {
     throw configError('ALLOWED_ORIGINS', '包含无效来源');
@@ -106,6 +122,7 @@ export const loadServerConfig = (env: Environment = process.env): ServerConfig =
     host,
     port,
     accessToken,
+    appleDeveloperToken: validateAppleDeveloperToken(env.APPLE_DEVELOPER_TOKEN),
     allowedOrigins: parseOrigins(env.ALLOWED_ORIGINS, host, port),
     maxBodyBytes: parseInteger(env, 'MAX_BODY_BYTES', 1_048_576, 1_048_576),
     maxConcurrentJobs: parseInteger(env, 'MAX_CONCURRENT_JOBS', 2),

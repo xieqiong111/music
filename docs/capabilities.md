@@ -22,18 +22,19 @@
 | 网易云公开歌单读取 | **Supported**（经同源本地服务；服务需在运行） | Planned | Planned | Planned |
 | 网易云私人歌单读取 | Unavailable（设计规定：独立 PWA 不处理需凭证的能力） | Planned（Preview，挂载数据目录） | Planned（Preview，安全存储） | Planned（Preview，安全存储） |
 | QQ 音乐公开歌单 | **Supported**（经同源本地服务；仅公开歌单，匿名只读，服务需在运行） | Planned（Docker 交付后可用） | Planned | Planned |
-| Apple 官方文件导入 | Planned | Planned | Planned | Planned |
-| Apple 官方在线 API（BYO developer credentials） | Planned（Preview） | Planned（BYO/self-hosted signer，Preview） | Planned（逐平台实测） | Planned（逐平台实测） |
+| Apple 官方文件导入 | **Supported**（浏览器内解析 Apple 导出 TXT/TSV、XML 与本工具 JSON，零网络、零上传） | Planned（可复用同一解析能力） | Planned（随 Tauri 接入） | Planned（随 Tauri 接入） |
+| Apple 官方在线 API（BYO developer credentials） | Preview（经本地服务；需服务端配置 `APPLE_DEVELOPER_TOKEN`，**未实测**，见 [verification/apple.md](verification/apple.md)） | Preview（BYO/self-hosted signer，未实测） | Planned（逐平台实测） | Planned（逐平台实测） |
 | Apple 浏览器会话适配 | Unavailable（设计规定） | Planned（Experimental，仅 loopback） | Planned（Experimental，默认关闭） | Unavailable（设计规定） |
-| 本地文件导入（TXT/CSV/JSON/XML） | Planned | Planned | Planned | Planned |
-| UTF-8 TXT/CSV/JSON 导出 | **Supported**（浏览器下载） | Planned（下载/API + 挂载数据目录） | Planned（原生保存对话框） | Planned |
+| 本地文件导入（Apple 导出文件 + 本工具 JSON） | **Supported**（见"Apple 官方文件导入"行） | Planned | Planned | Planned |
+| UTF-8 TXT/CSV/JSON 导出 | **Supported**（浏览器下载；文件导入的结果在本机直接导出，不经过服务端） | Planned（下载/API + 挂载数据目录） | Planned（原生保存对话框） | Planned |
 | 静态外壳离线加载（Service Worker 缓存） | **Supported**（仅缓存同源静态资源，见[安全文档](security.md)） | 不适用（服务端渲染分发静态资源） | 不适用 | 不适用 |
-| 桌面/Android 安装包分发 | 不适用 | 不适用 | Planned（未签名，见 README"未签名构建提示"） | Planned（未签名，见 README"未签名构建提示"） |
+| 桌面/Android 安装包分发 | 不适用 | 不适用 | Planned（Tauri 2 脚手架就绪：apps/desktop；本机无 Rust 工具链，构建**未验证**，见 [verification/tauri.md](verification/tauri.md)；未签名） | Planned（同左，需 Android SDK/NDK，未验证） |
 
 说明：
 
 - **QQ 音乐公开歌单**已在浏览器（PWA 界面）升级为 Supported：2026-09-05 的公开端点探测以 1240 首公开歌单证明了完整分页（`outputs/research/2026-09-05-qq-public-api-probe.md`），适配器经同源本地服务接入；NAS（Docker）、桌面与 Android 维度随对应交付节奏保持 Planned。当前边界见下节。
 - **网易云私人歌单 / Apple 浏览器会话**在独立 PWA 中 Unavailable 是**设计上的永久边界**：standalone PWA 只提供匿名能力；需要凭证的能力必须经已鉴权的本地服务或 Tauri 运行时。
+- **Apple 官方在线 API 为 Preview**：适配器按 Apple MusicKit API v1 文档化形状实现并通过 63 项合成 fixture 测试，但真实 API 从未被调用（本机无真实开发者令牌）；能力不会默认可用——需服务端显式配置 `APPLE_DEVELOPER_TOKEN` 才会注册，实测前的任何漂移都以 `PROVIDER_SCHEMA_DRIFT` 或 `complete=false` 诚实呈现。验证记录见 [verification/apple.md](verification/apple.md)。
 
 ## 网易云公开歌单的具体边界
 

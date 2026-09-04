@@ -13,6 +13,7 @@
   "dependencies": {
     "@playlist-exporter/contracts": "workspace:*",
     "@playlist-exporter/exporters": "workspace:*",
+    "@playlist-exporter/importers": "workspace:*",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

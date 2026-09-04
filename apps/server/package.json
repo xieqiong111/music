@@ -15,6 +15,7 @@
     "@playlist-exporter/contracts": "workspace:*",
     "@playlist-exporter/core": "workspace:*",
     "@playlist-exporter/exporters": "workspace:*",
+    "@playlist-exporter/provider-apple": "workspace:*",
     "@playlist-exporter/provider-netease": "workspace:*",
     "@playlist-exporter/provider-qq": "workspace:*",
     "hono": "^4.13.5",

@@ -13,10 +13,11 @@
 | 能力 | 状态 |
 |---|---|
 | 网易云音乐公开歌单读取 | **可用**（经本地服务读取，支持超过 1000 首的分页读取） |
-| QQ 音乐公开歌单读取 | **可用**（公开歌单，经本地服务读取） |
-| Apple Music | **暂不可用**（官方文件导入与 BYO Token 在线 API 预览在规划中） |
-| 本地文件导入（TXT/CSV/JSON） | **规划中** |
-| 桌面 / Android 打包（Tauri） | **规划中** |
+| QQ 音乐公开歌单读取 | **可用**（公开歌单，经本地服务读取，已实测 1240 首完整分页） |
+| Apple Music 文件导入 | **可用**（本机解析 Apple 导出的 TXT/TSV、XML 与本工具 JSON，不联网） |
+| Apple Music 在线 API | **Preview**（MusicKit v1，需服务端配置自带开发者令牌 `APPLE_DEVELOPER_TOKEN`；未实测，见 docs/verification/apple.md） |
+| 本地文件导入（Apple 导出文件） | **可用**（浏览器内完成，见"使用说明"第 2 步） |
+| 桌面 / Android 打包（Tauri 2） | **打包脚手架就绪**（apps/desktop，构建命令与限制见 docs/verification/tauri.md；本机无 Rust/Android SDK，未构建） |
 
 详细的三态矩阵（Supported / Planned / Unavailable，含浏览器 PWA、NAS Docker、桌面、Android 维度）见 [docs/capabilities.md](docs/capabilities.md)；能力目标与边界以[设计规格](docs/superpowers/specs/2026-09-02-streaming-playlist-exporter-design.md)为准。
 
@@ -96,15 +97,16 @@ docker compose up -d --build
 2. 粘贴网易云或 QQ 音乐的**公开**歌单链接，或纯数字歌单 ID：
    - 网易云：如 `https://music.163.com/#/playlist?id=XXXXX`；
    - QQ 音乐：分享链接形如 `https://y.qq.com/n/ryqq/playlist/<数字>`，或直接填数字 disstid。
-3. 点击读取：界面显示进度，任务可随时取消。
-4. 读取完成后进入预览：显示歌单名、创建者、曲目总数与曲目列表。
-5. 选择导出选项：
+3. **或使用本地文件导入**：在"本地文件导入"中选择 Apple Music 导出的播放列表文件（TXT/TSV，支持 UTF-8 与 UTF-16；XML 资料库/单播放列表）或本工具此前导出的 JSON。文件只在本机解析、不经过任何服务，解析结果同样进入预览与本机导出。
+4. 点击读取：界面显示进度，任务可随时取消。
+5. 读取完成后进入预览：显示歌单名、创建者、曲目总数与曲目列表。
+6. 选择导出选项：
    - 格式：TXT / CSV / JSON（TXT 默认 `歌曲名 - 歌手1、歌手2`，UTF-8 无 BOM、LF）；
    - 是否带序号；
    - 是否包含专辑列；
    - 是否按导出去重；
    - 换行符：LF / CRLF（CSV 另可选 BOM）。
-6. 点击导出：文件名形如 `平台_歌单名_YYYY-MM-DD.ext`，由浏览器直接下载到本地。
+7. 点击导出：文件名形如 `平台_歌单名_YYYY-MM-DD.ext`，由浏览器直接下载到本地。
 
 > QQ 音乐说明：QQ 公开接口对已下架/地区不可用曲目的标识暂未提供，工具会以占位与告警标注无法解析的条目。
 
@@ -152,8 +154,8 @@ CI 在 push 到 `main` 与所有 Pull Request 时运行：类型检查、测试�
 
 ## 未签名构建提示
 
-后续阶段提供的 Tauri 桌面（Windows/macOS）与 Android 安装包**不会附带代码签名证书**：
+桌面与 Android 打包基于 Tauri 2，脚手架位于 `apps/desktop`（构建命令见 [docs/verification/tauri.md](docs/verification/tauri.md)）。产出的安装包**不会附带代码签名证书**：
 
 - Windows 可能弹出 SmartScreen"未识别的应用"提示，macOS 可能提示"无法验证开发者"，Android 需要允许安装未知来源应用。
 - 这类提示意味着系统无法确认发布者身份，不代表文件一定有问题；请始终从本仓库的正式 Release 页面获取安装包，并在安装前核对版本说明。
-- 目前尚未提供任何下载链接；相关构建随 Tauri 阶段交付。
+- 截至本版本尚未提供任何下载链接；构建命令与"未验证"清单见 [docs/verification/tauri.md](docs/verification/tauri.md)。

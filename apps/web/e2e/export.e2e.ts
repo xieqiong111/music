@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import type { Playlist, ProviderId, Track } from '@playlist-exporter/contracts';
@@ -433,4 +434,43 @@ test('导出 QQ 音乐 12 首歌单：链接识别、顺序、重复曲、UTF-8 
   expect(lines[4]).toBe('重复曲目 🔁 - 同一歌手');
   // 下载字节与响应一致，全部 12 行按歌单原始顺序排列
   expect(text).toBe(txtBody(mocked.tracks));
+});
+
+test('导入 Apple Music 导出文件：本机解析、预览、本机导出且不经过服务端', async ({ page }) => {
+  // 不注册任何 /api mock：导入路径必须完全不产生网络请求。
+  const exportRequests: string[] = [];
+  await page.route('**/api/**', async route => {
+    exportRequests.push(route.request().url());
+    await route.abort();
+  });
+
+  const tsv = [
+    '名称\t艺术家\t专辑',
+    '第1首 · 导入曲 ✨\t歌手甲\t专辑一',
+    '第2首\t歌手乙、歌手丙\t专辑二',
+  ].join('\n');
+  await page.goto('/');
+  await page.getByLabel('选择播放列表文件').setInputFiles({
+    buffer: Buffer.from(tsv, 'utf-8'),
+    mimeType: 'text/plain',
+    name: '我的导入歌单.txt',
+  });
+
+  await expect(page.getByText('共 2 首歌曲')).toBeVisible();
+  await expect(page.getByRole('cell', { name: '第1首 · 导入曲 ✨' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '第2首' })).toBeVisible();
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: L.exportButton }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe(`apple-music_我的导入歌单_${localDate()}.txt`);
+
+  const savedPath = test.info().outputPath('downloaded-import.txt');
+  await download.saveAs(savedPath);
+  const bytes = await readFile(savedPath);
+  expect([...bytes.slice(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  expect(text).toBe('第1首 · 导入曲 ✨ - 歌手甲\n第2首 - 歌手乙、歌手丙\n');
+  // 本机导出路径不得触碰任何 API
+  expect(exportRequests).toEqual([]);
 });

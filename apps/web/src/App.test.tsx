@@ -144,4 +144,37 @@ describe('App', () => {
     await user.click(screen.getByText('技术详情'));
     expect(screen.getByText(/request-safe/)).toBeInTheDocument();
   });
+
+  it('imports an Apple Music text file, previews it, and exports locally without the server', async () => {
+    const mockService = service();
+    const user = userEvent.setup();
+    render(<App service={mockService} />);
+
+    const tsv = ['名称\t艺术家\t专辑', '导入曲一 ✨\t歌手甲\t专辑一', '导入曲二\t歌手乙、歌手丙\t专辑二'].join('\n');
+    const file = new File([tsv], '我的歌单.txt', { type: 'text/plain' });
+    await user.upload(screen.getByLabelText('选择播放列表文件'), file);
+
+    expect(await screen.findByText('共 2 首歌曲')).toBeInTheDocument();
+    expect(screen.getByText('导入曲一 ✨')).toBeInTheDocument();
+    expect(screen.getByText('导入曲二')).toBeInTheDocument();
+    expect(mockService.createInspection).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '导出文件' }));
+    await waitFor(() => {
+      const clickMock = HTMLAnchorElement.prototype.click as unknown as ReturnType<typeof vi.fn>;
+      expect(clickMock).toHaveBeenCalled();
+    });
+    expect(mockService.createExport).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows a plain Chinese error for unparseable files', async () => {
+    const user = userEvent.setup();
+    render(<App service={service()} />);
+    const file = new File(['this is not a playlist'], 'broken.txt', { type: 'text/plain' });
+    await user.upload(screen.getByLabelText('选择播放列表文件'), file);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/无法识别|解析失败/u);
+    expect(screen.getByText('技术详情')).toBeInTheDocument();
+  });
 });

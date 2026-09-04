@@ -7,6 +7,7 @@ describe('server config', () => {
       host: '127.0.0.1',
       port: 4319,
       accessToken: undefined,
+      appleDeveloperToken: undefined,
       allowedOrigins: ['http://127.0.0.1:4319', 'http://localhost:4319'],
       maxBodyBytes: 1_048_576,
       maxConcurrentJobs: 2,
@@ -38,6 +39,31 @@ describe('server config', () => {
   it.each(['', ' ', 'line\nbreak', 'tab\tvalue'])(
     'rejects an unsafe configured token',
     token => expect(() => loadServerConfig({ ACCESS_TOKEN: token })).toThrow(/ACCESS_TOKEN/),
+  );
+
+  it('leaves the Apple developer token unconfigured by default', () => {
+    expect(loadServerConfig({}).appleDeveloperToken).toBeUndefined();
+  });
+
+  it.each(['', '   ', '\t'])(
+    'treats a blank APPLE_DEVELOPER_TOKEN as unconfigured (%s)',
+    token => expect(loadServerConfig({ APPLE_DEVELOPER_TOKEN: token }).appleDeveloperToken)
+      .toBeUndefined(),
+  );
+
+  it('accepts an APPLE_DEVELOPER_TOKEN up to 8192 bytes without trimming it', () => {
+    expect(loadServerConfig({ APPLE_DEVELOPER_TOKEN: 'a'.repeat(8192) }).appleDeveloperToken)
+      .toHaveLength(8192);
+    expect(loadServerConfig({ APPLE_DEVELOPER_TOKEN: '  padded  ' }).appleDeveloperToken)
+      .toBe('  padded  ');
+    expect(() => loadServerConfig({ APPLE_DEVELOPER_TOKEN: 'a'.repeat(8193) }))
+      .toThrow(/APPLE_DEVELOPER_TOKEN/);
+  });
+
+  it.each(['line\nbreak', 'tab\tvalue', 'nul\u0000byte', 'del\u007fbyte'])(
+    'rejects an APPLE_DEVELOPER_TOKEN with control characters (%s)',
+    token => expect(() => loadServerConfig({ APPLE_DEVELOPER_TOKEN: token }))
+      .toThrow(/APPLE_DEVELOPER_TOKEN/),
   );
 
   it('allows lowering but never raising the 1 MiB request-body ceiling', () => {

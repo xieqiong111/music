@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
+import { AppError } from '@playlist-exporter/contracts';
 import type { Playlist, ProviderId } from '@playlist-exporter/contracts';
-import type { ExportOptions } from '@playlist-exporter/exporters';
+import { exportPlaylist, type ExportOptions } from '@playlist-exporter/exporters';
+import { importPlaylistFile } from '@playlist-exporter/importers';
 import {
   ApiError,
   HttpPlaylistService,
@@ -11,6 +13,7 @@ import {
 } from './api.js';
 import { ErrorDetails } from './components/ErrorDetails.js';
 import { ExportOptionsPanel } from './components/ExportOptions.js';
+import { ImportPanel } from './components/ImportPanel.js';
 import { PlaylistInput, detectProvider } from './components/PlaylistInput.js';
 import { PreviewTable } from './components/PreviewTable.js';
 import { ProgressPanel } from './components/ProgressPanel.js';
@@ -49,6 +52,15 @@ const errorFrom = (error: unknown): JobError => {
         : { technicalDetails: error.technicalDetails }),
     };
   }
+  if (error instanceof AppError) {
+    return {
+      code: error.code,
+      message: error.message,
+      ...(error.technicalDetails === undefined
+        ? {}
+        : { technicalDetails: error.technicalDetails }),
+    };
+  }
   return fallbackError();
 };
 
@@ -79,6 +91,9 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
   const [error, setError] = useState<JobError>();
   const [options, setOptions] = useState<ExportOptions>(DEFAULT_OPTIONS);
   const [exporting, setExporting] = useState(false);
+  // true when the previewed playlist came from a local file import; those
+  // exports are generated in the browser and never hit the server.
+  const [imported, setImported] = useState(false);
   const generation = useRef(0);
   const jobIdRef = useRef<string | undefined>(undefined);
 
@@ -114,6 +129,7 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
     setError(undefined);
     setPlaylist(undefined);
     setSnapshot(undefined);
+    setImported(false);
     setStatus('queued');
     try {
       const created = await service.createInspection(effectiveProvider, input.trim());
@@ -166,13 +182,39 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
     }
   };
 
+  const importFile = async (file: File): Promise<void> => {
+    const current = ++generation.current;
+    setError(undefined);
+    setPlaylist(undefined);
+    setSnapshot(undefined);
+    setStatus(undefined);
+    setJobId(undefined);
+    jobIdRef.current = undefined;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const parsed = await importPlaylistFile(bytes, { filename: file.name });
+      if (generation.current !== current) return;
+      setImported(true);
+      setPlaylist(parsed);
+    } catch (caught) {
+      if (generation.current !== current) return;
+      setError(errorFrom(caught));
+    }
+  };
+
   const exportFile = async (): Promise<void> => {
-    if (jobId === undefined || playlist?.complete !== true) return;
+    if (playlist?.complete !== true) return;
+    if (!imported && jobId === undefined) return;
     setExporting(true);
     setError(undefined);
     try {
-      const artifact = await service.createExport(jobId, options);
-      download(artifact.filename, artifact.mimeType, artifact.bytes);
+      if (imported) {
+        const artifact = exportPlaylist(playlist, options);
+        download(artifact.filename, artifact.mimeType, artifact.bytes);
+      } else {
+        const artifact = await service.createExport(jobId as string, options);
+        download(artifact.filename, artifact.mimeType, artifact.bytes);
+      }
     } catch (caught) {
       setError(errorFrom(caught));
     } finally {
@@ -199,6 +241,7 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
         onTokenChange={setAccessToken}
         value={input}
       />
+      <ImportPanel onFile={file => void importFile(file)} />
 
       {status !== undefined && (
         <ProgressPanel

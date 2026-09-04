@@ -50,3 +50,18 @@ For every incorporated component, add an entry containing:
 6. A concise description of local modifications.
 7. Verification that no credential, real playlist, audio URL, DRM logic, or restricted/noncommercial code was included.
 
+
+## Apple and Tauri implementation provenance (2026-09-05)
+
+- Apple MusicKit API v1 client (`packages/provider-apple`): shapes implemented from Apple's official
+  published API documentation only, verified against synthetic fixtures. No Apple sample code, SDK
+  runtime, or third-party implementation was copied. The capability ships as **Preview** and has
+  never been exercised against the live API (no developer token available); see
+  `docs/verification/apple.md`.
+- Apple playlist file parsers (`packages/importers`): original implementations for the formats
+  Apple Music/iTunes emit (tab-separated text, plist XML subset). No third-party parser was copied;
+  fixtures are fully synthetic.
+- Tauri 2 packaging scaffold (`apps/desktop`): configuration authored for this repository using the
+  published Tauri 2 configuration schema; the `@tauri-apps/cli` build-time dependency is registered
+  in the root `THIRD_PARTY_NOTICES.md`. No Tauri example template code was incorporated; all builds
+  remain unverified locally (no Rust/Android toolchain), see `docs/verification/tauri.md`.

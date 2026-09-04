@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { serve, type ServerType } from '@hono/node-server';
 import { AppError, type MusicProvider, type ProviderId } from '@playlist-exporter/contracts';
 import { createHttpTransport } from '@playlist-exporter/core';
+import { AppleProvider } from '@playlist-exporter/provider-apple';
 import { NeteaseProvider } from '@playlist-exporter/provider-netease';
 import { QqProvider } from '@playlist-exporter/provider-qq';
 import { createServerApp, type ServerLogEvent } from './app.js';
@@ -12,9 +13,16 @@ import { createJobRegistry, type JobRegistry } from './jobs.js';
 
 // Outbound egress is pinned to the exact metadata endpoints each registered
 // provider uses: QQ playlist reads only ever target i.y.qq.com (verified by
-// outputs/research/2026-09-05-qq-public-api-probe.md); u.y.qq.com /
-// c.y.qq.com are not used by this project and stay blocked.
-const ALLOWED_EGRESS_HOSTS = new Set(['music.163.com', 'y.music.163.com', '163cn.tv', 'i.y.qq.com']);
+// outputs/research/2026-09-05-qq-public-api-probe.md); Apple Music BYO
+// developer-token catalog reads target api.music.apple.com only.
+// u.y.qq.com / c.y.qq.com are not used by this project and stay blocked.
+const ALLOWED_EGRESS_HOSTS = new Set([
+  'music.163.com',
+  'y.music.163.com',
+  '163cn.tv',
+  'i.y.qq.com',
+  'api.music.apple.com',
+]);
 
 const egressError = (): AppError => new AppError({
   code: 'EGRESS_NOT_ALLOWED',
@@ -86,9 +94,17 @@ export const startServer = (options: StartServerOptions = {}): ServerRuntime => 
     maxQueued: config.maxQueuedJobs,
     terminalTtlMs: config.jobTtlMs,
   });
+  // Apple Music (Preview) is only registered when the operator configured the
+  // BYO developer token; without it, inspect requests for `apple-music` fall
+  // through to the existing 422 UNSUPPORTED_PROVIDER response.
+  const appleDeveloperToken = config.appleDeveloperToken;
   const providers = new Map<ProviderId, MusicProvider>([
     ['netease', new NeteaseProvider()],
     ['qq-music', new QqProvider()],
+    ...(appleDeveloperToken === undefined ? [] : [[
+      'apple-music',
+      new AppleProvider(() => appleDeveloperToken),
+    ] as [ProviderId, MusicProvider]]),
   ]);
   const app = createServerApp({
     config,

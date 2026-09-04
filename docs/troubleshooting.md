@@ -110,3 +110,25 @@
 网易云接口按页返回曲目（本工具每页最多 1000 首）。超过 1000 首的歌单会**自动分页读取**，读取过程受多重完整性校验保护：页游标必须前进、页数与条目数有安全预算、累计条目必须与上游声明的总数一致、详情批量接口的结果按原始顺序重排。任何一项校验失败，任务都会以 `INCOMPLETE_PAGINATION` 失败（或结果被标记 `complete=false`），导出随之被阻止（409 / 422）。
 
 这是**有意设计**：宁可明确失败，也不静默截断出一个"看起来完整"的导出文件。遇到时直接重试通常可以恢复；稳定复现请携带歌单规模与 `requestId` 反馈。
+
+## Apple Music 在线 API（Preview）相关
+
+| 报错 | 原因与处理 |
+|---|---|
+| 422 `UNSUPPORTED_PROVIDER`（Apple Music） | 服务端未配置 `APPLE_DEVELOPER_TOKEN`。该能力为 Preview：需自行准备 Apple 开发者 JWT 并在服务端环境变量中提供后重启服务 |
+| `AUTH_REQUIRED`：缺少 Apple Music 开发者令牌 | 服务端未配置令牌即触发了 Apple 任务（一般不应发生；请反馈） |
+| `AUTH_REQUIRED`：开发者令牌无效或已过期 | 自带的 JWT 过期/签名无效；更换令牌后重试。工具不会自动升级认证，也不会重试 401 |
+| 403 `PROVIDER_HTTP_ERROR`（Apple） | 令牌对该资源无权限（如目录未上架对应 storefront）；确认歌单链接中的 storefront 与令牌权限 |
+| `PROVIDER_SCHEMA_DRIFT`（Apple） | 真实接口返回与文档化 schema 不一致（Preview 能力未实测的已知风险）；结果不会被导出，请携带 `requestId` 反馈 |
+
+## 本地文件导入相关（`IMPORT_*`）
+
+| 报错 | 原因与处理 |
+|---|---|
+| `IMPORT_UNKNOWN_FORMAT`：无法识别的文件格式 | 仅支持 Apple 导出的 TXT/TSV（UTF-8 或 UTF-16）、plist XML 与本工具导出的 JSON；请确认文件来源与扩展名 |
+| `IMPORT_INVALID_ENCODING` | 无 BOM 且不是合法 UTF-8（如 GBK 编码文件）；用文本编辑器转存为 UTF-8（带或不带 BOM）后重试 |
+| `IMPORT_MISSING_REQUIRED_COLUMNS` / `IMPORT_MISSING_HEADER` | 文本文件缺少表头行或必需列（歌名/歌手）；确认是从 Music.app/iTunes 直接导出的文件 |
+| `IMPORT_XML_*`（DOCTYPE 被拒绝等） | XML 文件含不支持的节点或可疑 DOCTYPE（安全防护）；请使用 Apple 官方导出格式 |
+| `IMPORT_UNSUPPORTED_SCHEMA_VERSION` | JSON 文件由其他 schema 版本导出；使用当前版本工具重新导出的 JSON |
+
+> 导入行为说明：缺失歌手/歌名的行会以 `[unknown artist]` / `[unknown title]` 占位并在 warnings 中计数，**不会静默丢弃**；多歌手文本串（如"歌手甲、歌手乙"）作为单条歌手保留，不做启发式拆分。
