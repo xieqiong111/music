@@ -1,0 +1,58 @@
+# Docker 镜像多架构构建验证：linux/amd64 + linux/arm64。
+#
+# 本阶段仅构建、不推送：push 显式为 false，镜像发布（registry 凭证、tag 策略、
+# 最新版指针）属于后续发布阶段的工作，启用时再补充。
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'apps/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'apps/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/docker.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build image (amd64 + arm64, no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      # Dockerfile 属于 NAS Docker 阶段的交付物；在其合入之前本步骤自动跳过，
+      # 保证该 workflow 不会因文件缺失而红灯。
+      - name: Build image (amd64 + arm64, push disabled)
+        if: ${{ hashFiles('Dockerfile') != '' }}
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          # 显式不推送：镜像发布流程在后续阶段再开启（届时需配置 registry 与凭证）。
+          push: false
+          tags: playlist-exporter:ci
