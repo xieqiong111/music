@@ -5,6 +5,8 @@
 No candidate-project source code, binary, font, fixture, credential, or user playlist has been copied into the product. The implementation now uses versioned npm dependencies; the exact runtime/build components and required MIT notices are recorded in the root `THIRD_PARTY_NOTICES.md`. The candidate entries below remain research evaluations only.
 
 Current direct additions for the NAS service: Hono 4.13.5 (MIT), @hono/node-server 2.1.1 (MIT), Zod 4.5.4 (MIT, already used by shared packages), and esbuild 0.28.2 (MIT, build-time only). No dependency source was manually modified.
+Current direct additions for the PWA checkpoint: React and React DOM 19.2.8 (MIT), Vite 8.2.2 and its React plugin 6.1.1 (MIT), plus Testing Library, jsdom, and React type packages used only for development tests. Exact versions and canonical sources are recorded in the root notice. No dependency source was manually modified.
+Current direct additions for the PWA end-to-end suite: @playwright/test 1.62.1 (Apache-2.0, test-only browser automation with Chromium headless shell) and @types/node 24.13.3 (MIT, development-only types). Both are excluded from every build artifact. No dependency source was manually modified.
 
 Before any reuse, the exact source repository, immutable commit, file/function, license text, required notices, local modifications, and verification tests must be recorded here.
 

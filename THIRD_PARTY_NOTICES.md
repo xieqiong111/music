@@ -13,6 +13,23 @@ The Phase 1 candidate ledger is preserved in `outputs/THIRD_PARTY_NOTICES.md`. B
 | @hono/node-server | 2.1.1 | https://github.com/honojs/node-server | MIT | Node HTTP adapter; bundled into the NAS server artifact |
 | Zod | 4.5.4 | https://github.com/colinhacks/zod | MIT | Runtime schema validation; bundled into packages and the NAS server artifact |
 | esbuild | 0.28.2 | https://github.com/evanw/esbuild | MIT | Build-time bundler only; its executable/source is not included in the server artifact |
+| React | 19.2.8 | https://github.com/facebook/react | MIT | Web UI runtime; bundled into the PWA |
+| React DOM | 19.2.8 | https://github.com/facebook/react | MIT | Browser renderer; bundled into the PWA |
+| Vite | 8.2.2 | https://github.com/vitejs/vite | MIT | PWA build and development tooling |
+| @vitejs/plugin-react | 6.1.1 | https://github.com/vitejs/vite-plugin-react | MIT | React transform used at build time |
+| Testing Library React | 16.3.3 | https://github.com/testing-library/react-testing-library | MIT | Test-only UI assertions |
+| Testing Library jest-dom | 7.0.1 | https://github.com/testing-library/jest-dom | MIT | Test-only DOM matchers |
+| Testing Library user-event | 14.6.7 | https://github.com/testing-library/user-event | MIT | Test-only user interaction simulation |
+| jsdom | 30.0.1 | https://github.com/jsdom/jsdom | MIT | Test-only browser DOM implementation |
+| @types/react | 19.2.18 | https://github.com/DefinitelyTyped/DefinitelyTyped | MIT | Development-only React type declarations |
+| @types/react-dom | 19.2.7 | https://github.com/DefinitelyTyped/DefinitelyTyped | MIT | Development-only React DOM type declarations |
+| @playwright/test | 1.62.1 | https://github.com/microsoft/playwright | Apache-2.0 | Test-only end-to-end browser testing (Chromium headless shell); not part of any build artifact |
+| @types/node | 24.13.3 | https://github.com/DefinitelyTyped/DefinitelyTyped | MIT | Development-only Node.js type declarations for e2e tooling |
+
+### Apache-2.0 license notice (@playwright/test)
+
+Copyright Microsoft Corporation. Licensed under the Apache License, Version 2.0.
+You may obtain a copy of the license at https://www.apache.org/licenses/LICENSE-2.0.
 
 No dependency source was manually copied or modified. Versions are locked in `pnpm-lock.yaml`.
 The generated server bundle is a transformation of this project's TypeScript and the three
@@ -28,6 +45,14 @@ Copyright (c) 2022-present Yusuke Wada and Hono contributors (@hono/node-server)
 Copyright (c) 2025 Colin McDonnell (Zod)
 
 Copyright (c) 2020 Evan Wallace (esbuild)
+
+Copyright (c) Meta Platforms, Inc. and affiliates (React and React DOM)
+
+Copyright (c) 2019-present Evan You and Vite contributors (Vite)
+
+Copyright respective Testing Library and jsdom contributors
+
+Copyright respective DefinitelyTyped contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
