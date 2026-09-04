@@ -2,7 +2,9 @@
 
 > Status: Phase 1 research ledger plus implementation provenance, 2026-09-04.
 
-No third-party source code, binary, font, fixture, credential, or user playlist has been incorporated into the product at this stage. The entries below are evaluated candidates only; they are **not** declarations that their code is currently distributed by this project.
+No candidate-project source code, binary, font, fixture, credential, or user playlist has been copied into the product. The implementation now uses versioned npm dependencies; the exact runtime/build components and required MIT notices are recorded in the root `THIRD_PARTY_NOTICES.md`. The candidate entries below remain research evaluations only.
+
+Current direct additions for the NAS service: Hono 4.13.5 (MIT), @hono/node-server 2.1.1 (MIT), Zod 4.5.4 (MIT, already used by shared packages), and esbuild 0.28.2 (MIT, build-time only). No dependency source was manually modified.
 
 Before any reuse, the exact source repository, immutable commit, file/function, license text, required notices, local modifications, and verification tests must be recorded here.
 
