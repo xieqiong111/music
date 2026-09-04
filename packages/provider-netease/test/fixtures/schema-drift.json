@@ -1,0 +1,9 @@
+{
+  "code": 200,
+  "playlist": {
+    "id": 42,
+    "name": null,
+    "trackCount": "3",
+    "trackIds": "not-an-array"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "code": 200,
+  "playlist": {
+    "id": 42,
+    "name": "测试歌单 🎵",
+    "trackCount": 3,
+    "creator": { "nickname": "测试用户" },
+    "trackIds": [{ "id": 101 }, { "id": 102 }, { "id": 101 }]
+  }
+}

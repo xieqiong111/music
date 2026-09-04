@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-> Status: Phase 1 research ledger, 2026-09-02.
+> Status: Phase 1 research ledger plus implementation provenance, 2026-09-04.
 
 No third-party source code, binary, font, fixture, credential, or user playlist has been incorporated into the product at this stage. The entries below are evaluated candidates only; they are **not** declarations that their code is currently distributed by this project.
 
@@ -18,7 +18,7 @@ Before any reuse, the exact source repository, immutable commit, file/function, 
 | SongMirror | https://github.com/ahnafnafee/songmirror | MIT | Versioned backup schema ideas | Evaluated; no code copied |
 | halo_music | https://github.com/zhoujungis/halo_music | Apache-2.0 | Provider normalization and pagination-test ideas | Evaluated; no code copied |
 | NetEase Playlist Exporter | https://github.com/LwhJesse/Netease-Playlist-Exporter | MIT | Completeness checks and export schema ideas | Evaluated; no code copied |
-| NeteaseCloudMusicApi Enhanced | https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced | MIT | Replaceable NetEase API dependency candidate | Evaluated; not installed |
+| NeteaseCloudMusicApi Enhanced | https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced | MIT | Protocol behavior reference at commit `f5ce55bcb46e29c8e5350ca796fb1cc9d9914acd`, `module/playlist_track_all.js` | Request sequence inspected; no code copied and no dependency installed |
 
 ## Excluded or blocked
 
