@@ -3,8 +3,14 @@ import { z } from 'zod';
 /**
  * MusicKit API v1 catalog shapes. WARNING: these are modeled from Apple's
  * published MusicKit documentation only; no live Apple API call was possible
- * in this environment (no real developer token), so every field is kept
+ * in this environment (no real developer token), so per-entry fields are kept
  * nullish-tolerant on purpose.
+ *
+ * The page-envelope `data` fields are the deliberate exception: a playlist
+ * whose tracks relationship is absent, and a continuation page without a
+ * `data` array, are contract violations and must fail loudly — treating them
+ * as `[]` would masquerade a broken read as an empty playlist. Only an actual
+ * `data: []` is accepted as a legal empty page.
  *
  * Zod's default strip behavior deliberately drops unmodeled payload fields:
  * artwork, contentRating, playParams, editorial notes, envelope `meta`, and
@@ -36,9 +42,7 @@ export type AppleCatalogEntry = AppleCatalogSong | null;
 export const applePlaylistTracksSchema = z.object({
   href: z.string().nullish(),
   next: z.string().nullish(),
-  data: z.array(appleCatalogSongSchema.nullable())
-    .nullish()
-    .transform((value) => value ?? []),
+  data: z.array(appleCatalogSongSchema.nullable()),
 });
 
 /** One `data[]` element of GET /v1/catalog/{storefront}/playlists/{id}. */
@@ -55,8 +59,8 @@ export const appleCatalogPlaylistSchema = z.object({
     trackCount: z.number().int().nonnegative().nullish(),
   }),
   relationships: z.object({
-    tracks: applePlaylistTracksSchema.nullish(),
-  }).nullish(),
+    tracks: applePlaylistTracksSchema,
+  }),
 });
 
 /**
@@ -68,14 +72,13 @@ export const appleCatalogPlaylistResponseSchema = z.object({
 });
 
 /**
- * Continuation envelope returned by the absolute `next` URL
- * (`/v1/catalog/{storefront}/playlists/{id}/tracks`): `{ data: [...], next? }`.
- * A missing `next` terminates pagination normally.
+ * Continuation envelope returned by the `next` URL, which Apple may serve as
+ * an absolute URL or as a path relative to the API origin, but which must
+ * always resolve to `/v1/catalog/{storefront}/playlists/{id}/tracks`:
+ * `{ data: [...], next? }`. A missing `next` terminates pagination normally.
  */
 export const appleCatalogTracksResponseSchema = z.object({
-  data: z.array(appleCatalogSongSchema.nullable())
-    .nullish()
-    .transform((value) => value ?? []),
+  data: z.array(appleCatalogSongSchema.nullable()),
   next: z.string().nullish(),
 });
 

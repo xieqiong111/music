@@ -155,21 +155,26 @@ const resolveOptions = (input: AppleProviderOptions): ResolvedOptions => {
 };
 
 /**
- * Continuation pages are requested by their absolute `next` URL. Host and path
- * are pinned here as defense in depth so a poisoned `next` cannot pivot the
- * export to another origin even when the injected transport lacks an egress
- * filter.
+ * Continuation pages are requested by the `relationships.tracks.next` URL,
+ * which Apple may serve as an absolute URL or as a path relative to the API
+ * origin (see https://developer.apple.com/documentation/applemusicapi/fetching-resources-by-page).
+ * Origin and path are pinned here as defense in depth: a poisoned `next` is
+ * resolved against the fixed API origin and must still be an HTTPS URL on
+ * api.music.apple.com without userinfo or port, and must point exactly at the
+ * tracks path of the current storefront and current playlist — so it cannot
+ * pivot the export to another origin, resource, or playlist even when the
+ * injected transport lacks an egress filter.
  */
-const parseNextUrl = (next: string): URL => {
+const parseNextUrl = (next: string, tracksPath: string): URL => {
   let url: URL;
   try {
-    url = new URL(next);
+    url = new URL(next, API_ORIGIN);
   } catch {
     throw schemaError(TRACKS_ENDPOINT, ['next']);
   }
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' ||
       url.port !== '' || url.hostname.toLowerCase() !== API_HOST ||
-      !url.pathname.startsWith('/v1/catalog/')) {
+      url.pathname !== tracksPath) {
     throw schemaError(TRACKS_ENDPOINT, ['next']);
   }
   return url;
@@ -309,12 +314,13 @@ export class AppleProvider implements MusicProvider {
   }
 
   /**
-   * Pages the playlist via the absolute `relationships.tracks.next` URLs.
-   * Termination is proven by the pagination guard: a missing `next` ends the
-   * read with the `next-absent` policy; a repeated/non-advancing `next` is
-   * reported as stalled; when Apple declares `attributes.trackCount`, it is
-   * used as the expected total, and any divergence yields an honest
-   * complete=false snapshot instead of a fabricated success.
+   * Pages the playlist via the `relationships.tracks.next` URLs, which may be
+   * absolute or relative to the API origin. Termination is proven by the
+   * pagination guard: a missing `next` ends the read with the `next-absent`
+   * policy; a repeated/non-advancing `next` is reported as stalled; when Apple
+   * declares `attributes.trackCount`, it is used as the expected total, and
+   * any divergence yields an honest complete=false snapshot instead of a
+   * fabricated success.
    */
   private async fetchAllPages(
     parsed: ParsedApplePlaylistInput,
@@ -325,6 +331,10 @@ export class AppleProvider implements MusicProvider {
       maxEntries: this.options.maxEntries,
       allowedTerminalPolicies: ['next-absent'],
     });
+    // Continuation `next` values must point exactly at this playlist's tracks
+    // path; anything else (other storefronts, other playlists, library or
+    // foreign resources) is rejected as schema drift by parseNextUrl.
+    const tracksPath = `/v1/catalog/${parsed.storefront}/playlists/${encodeURIComponent(parsed.playlistId)}/tracks`;
     const token = this.requireDeveloperToken();
     const tracks: Track[] = [];
     let title: string | undefined;
@@ -353,7 +363,7 @@ export class AppleProvider implements MusicProvider {
         items = page.items;
         next = page.next;
       }
-      const parsedNext = next === undefined ? null : parseNextUrl(next);
+      const parsedNext = next === undefined ? null : parseNextUrl(next, tracksPath);
       guard.recordPage({
         rawItemCount: items.length,
         expectedTotal: trackCount,
@@ -414,8 +424,11 @@ export class AppleProvider implements MusicProvider {
     return {
       title: playlist.attributes.name,
       trackCount: playlist.attributes.trackCount ?? undefined,
-      items: playlist.relationships?.tracks?.data ?? [],
-      next: playlist.relationships?.tracks?.next ?? undefined,
+      // relationships and tracks are required by the schema: a missing or
+      // mistyped tracks relationship already failed safeParse as
+      // PROVIDER_SCHEMA_DRIFT, so only a real `data` array reaches here.
+      items: playlist.relationships.tracks.data,
+      next: playlist.relationships.tracks.next ?? undefined,
     };
   }
 

@@ -72,6 +72,10 @@ const tracksPage = (options: { songs: unknown[]; next?: string }): unknown => ({
 const nextUrl = (offset: number): string =>
   `https://api.music.apple.com/v1/catalog/us/playlists/pl.u-synth01/tracks` +
   `?offset=${offset}&limit=100`;
+// Apple may serve `next` as a path relative to the API origin; resolving it
+// must yield the same absolute continuation URL as the absolute variant.
+const relativeNextUrl = (offset: number): string =>
+  `/v1/catalog/us/playlists/pl.u-synth01/tracks?offset=${offset}&limit=100`;
 const songs = (from: number, to: number): unknown[] =>
   Array.from({ length: to - from + 1 }, (_, index) => song(from + index));
 
@@ -171,6 +175,63 @@ describe('AppleProvider', () => {
     });
   });
 
+  it('follows relative next links across 11 pages to read 1005 tracks', async () => {
+    const { http, calls } = transport(url => {
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      if (offset >= 1000) return response(tracksPage({ songs: songs(1001, 1005) }));
+      if (offset === 0) {
+        return response(playlistPage({
+          songs: songs(1, 100), trackCount: 1005, next: relativeNextUrl(100),
+        }));
+      }
+      return response(tracksPage({
+        songs: songs(offset + 1, offset + 100), next: relativeNextUrl(offset + 100),
+      }));
+    });
+    const playlist = await new AppleProvider(() => TOKEN)
+      .fetchPlaylist({ value: 'pl.u-synth01' }, context(http));
+
+    expect(calls).toHaveLength(11);
+    expect(calls[0]?.url.toString())
+      .toBe('https://api.music.apple.com/v1/catalog/us/playlists/pl.u-synth01?limit=100');
+    // Every relative next resolves against the API origin to the exact
+    // absolute continuation URL, including storefront and playlist id.
+    for (const [index, call] of calls.slice(1).entries()) {
+      expect(call.url.toString()).toBe(nextUrl((index + 1) * 100));
+    }
+    expect(playlist).toMatchObject({ total: 1005, complete: true });
+    expect(playlist.tracks).toHaveLength(1005);
+    expect(playlist.tracks[0]).toMatchObject({ position: 0, trackId: '1440000001' });
+    expect(playlist.tracks[1004]).toMatchObject({
+      position: 1004,
+      title: '歌曲 1005',
+      trackId: '1440000001005',
+    });
+  });
+
+  it('accepts absolute and relative next links mixed in one read', async () => {
+    const { http, calls } = transport(url => {
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      if (offset === 0) {
+        return response(playlistPage({
+          songs: songs(1, 100), trackCount: 301, next: nextUrl(100),
+        }));
+      }
+      if (offset === 100) {
+        return response(tracksPage({ songs: songs(101, 200), next: relativeNextUrl(200) }));
+      }
+      return response(tracksPage({ songs: songs(201, 301) }));
+    });
+    const playlist = await new AppleProvider(() => TOKEN)
+      .fetchPlaylist({ value: 'pl.u-synth01' }, context(http));
+
+    expect(calls).toHaveLength(3);
+    expect(calls[1]?.url.toString()).toBe(nextUrl(100));
+    expect(calls[2]?.url.toString()).toBe(nextUrl(200));
+    expect(playlist.tracks).toHaveLength(301);
+    expect(playlist).toMatchObject({ total: 301, complete: true });
+  });
+
   it('reads a missing trackCount as "everything served" and still completes', async () => {
     const { http, calls } = transport(() => response(playlistPage({ songs: songs(1, 3) })));
     const playlist = await new AppleProvider(() => TOKEN)
@@ -195,6 +256,21 @@ describe('AppleProvider', () => {
         return response(playlistPage({ songs: songs(1, 2), trackCount: 3, next: nextUrl(100) }));
       }
       return response(tracksPage({ songs: songs(3, 3), next: nextUrl(100) }));
+    });
+    await expect(new AppleProvider(() => TOKEN)
+      .fetchPlaylist({ value: 'pl.u-synth01' }, context(http)))
+      .rejects.toMatchObject({ code: APP_ERROR_CODES.INCOMPLETE_PAGINATION });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('reports a stalled relative next cursor instead of looping forever', async () => {
+    const stalledRelative = relativeNextUrl(100);
+    const { http, calls } = transport(url => {
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      if (offset === 0) {
+        return response(playlistPage({ songs: songs(1, 2), trackCount: 3, next: stalledRelative }));
+      }
+      return response(tracksPage({ songs: songs(3, 3), next: stalledRelative }));
     });
     await expect(new AppleProvider(() => TOKEN)
       .fetchPlaylist({ value: 'pl.u-synth01' }, context(http)))
@@ -555,6 +631,109 @@ describe('AppleProvider', () => {
     expect((foreignNextError as AppError).technicalDetails).toMatchObject({ schemaPath: 'next' });
   });
 
+  it.each([
+    ['a protocol-relative foreign host',
+      '//evil.example/v1/catalog/us/playlists/pl.u-synth01/tracks?offset=100'],
+    ['a plain-http next',
+      'http://api.music.apple.com/v1/catalog/us/playlists/pl.u-synth01/tracks?offset=100'],
+    ['a next with an explicit port',
+      'https://api.music.apple.com:8443/v1/catalog/us/playlists/pl.u-synth01/tracks?offset=100'],
+    ['a next with userinfo',
+      'https://user:pass@api.music.apple.com/v1/catalog/us/playlists/pl.u-synth01/tracks?offset=100'],
+    ['a foreign storefront path',
+      '/v1/catalog/gb/playlists/pl.u-synth01/tracks?offset=100'],
+    ['another playlist tracks path',
+      '/v1/catalog/us/playlists/pl.other/tracks?offset=100'],
+    ['a non-tracks playlist path',
+      '/v1/catalog/us/playlists/pl.u-synth01?offset=100'],
+    ['a library path',
+      '/v1/me/library/playlists/pl.u-synth01/tracks?offset=100'],
+    ['a garbage string',
+      'not-a-next-value'],
+  ])('rejects %s as next without issuing a continuation request', async (_label, next) => {
+    let calls = 0;
+    const http: HttpTransport = {
+      async request() {
+        calls += 1;
+        return response(playlistPage({ songs: songs(1, 2), trackCount: 5, next }));
+      },
+    };
+    const error = await new AppleProvider(() => TOKEN)
+      .fetchPlaylist({ value: 'pl.u-synth01' }, context(http))
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AppError);
+    expect((error as AppError).code).toBe('PROVIDER_SCHEMA_DRIFT');
+    expect((error as AppError).technicalDetails).toMatchObject({ schemaPath: 'next' });
+    expect(calls).toBe(1);
+  });
+
+  it.each([
+    ['missing first-page relationships', {
+      data: [{ id: 'pl.u-synth01', type: 'playlists', attributes: { name: '合成歌单' } }],
+    }],
+    ['missing relationships.tracks', {
+      data: [{
+        id: 'pl.u-synth01', type: 'playlists', attributes: { name: '合成歌单' },
+        relationships: {},
+      }],
+    }],
+    ['null relationships.tracks', {
+      data: [{
+        id: 'pl.u-synth01', type: 'playlists', attributes: { name: '合成歌单' },
+        relationships: { tracks: null },
+      }],
+    }],
+    ['missing tracks.data', {
+      data: [{
+        id: 'pl.u-synth01', type: 'playlists', attributes: { name: '合成歌单' },
+        relationships: { tracks: { href: '/v1/catalog/us/playlists/pl.u-synth01/tracks' } },
+      }],
+    }],
+    ['null tracks.data', {
+      data: [{
+        id: 'pl.u-synth01', type: 'playlists', attributes: { name: '合成歌单' },
+        relationships: { tracks: { data: null } },
+      }],
+    }],
+    ['non-array tracks.data', {
+      data: [{
+        id: 'pl.u-synth01', type: 'playlists', attributes: { name: '合成歌单' },
+        relationships: { tracks: { data: { id: '1440notarray' } } },
+      }],
+    }],
+  ])('reports schema drift for %s instead of an empty playlist', async (_label, body) => {
+    const { http, calls } = transport(() => response(body));
+    const error = await new AppleProvider(() => TOKEN)
+      .fetchPlaylist({ value: 'pl.u-synth01' }, context(http))
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AppError);
+    expect((error as AppError).code).toBe('PROVIDER_SCHEMA_DRIFT');
+    expect((error as AppError).technicalDetails)
+      .toMatchObject({ endpoint: PLAYLIST_ENDPOINT_LABEL });
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['missing continuation data', {}],
+    ['null continuation data', { data: null }],
+  ])('reports schema drift for %s instead of an empty playlist', async (_label, continuation) => {
+    const { http, calls } = transport(url => {
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      if (offset === 0) {
+        return response(playlistPage({ songs: songs(1, 2), trackCount: 3, next: nextUrl(100) }));
+      }
+      return response(continuation);
+    });
+    const error = await new AppleProvider(() => TOKEN)
+      .fetchPlaylist({ value: 'pl.u-synth01' }, context(http))
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AppError);
+    expect((error as AppError).code).toBe('PROVIDER_SCHEMA_DRIFT');
+    expect((error as AppError).technicalDetails)
+      .toMatchObject({ endpoint: TRACKS_ENDPOINT_LABEL });
+    expect(calls).toHaveLength(2);
+  });
+
   it('maps an empty data envelope to playlist-not-found without retrying', async () => {
     let calls = 0;
     const http: HttpTransport = {
@@ -615,8 +794,9 @@ describe('AppleProvider', () => {
   });
 });
 
-// Kept in sync with the provider constant; the drift tests assert against it.
+// Kept in sync with the provider constants; the drift tests assert against them.
 const PLAYLIST_ENDPOINT_LABEL = '/v1/catalog/{storefront}/playlists/{id}';
+const TRACKS_ENDPOINT_LABEL = '/v1/catalog/{storefront}/playlists/{id}/tracks';
 
 describe('parseApplePlaylistInput (provider smoke)', () => {
   it('parses the canonical share link shape', () => {
