@@ -7,6 +7,13 @@ function decode(bytes: Uint8Array): string {
 }
 
 describe('TXT exporter', () => {
+  it('keeps one line per track when metadata contains line breaks', () => {
+    const input = { ...playlist, total: 1, tracks: [{ ...playlist.tracks[0]!,
+      title: '歌\r\n名', artists: ['艺\n人', '歌\u2028手'], album: '专\r辑',
+    }] };
+    const text = decode(exportPlaylist(input, { format: 'txt', includeAlbum: true }).bytes);
+    expect(text).toBe('歌 名 - 艺 人、歌 手 - 专 辑\n');
+  });
   it('writes UTF-8 LF text in source order and keeps every availability state', () => {
     const artifact = exportPlaylist(playlist, {
       format: 'txt',

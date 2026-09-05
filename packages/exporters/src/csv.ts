@@ -41,8 +41,9 @@ export function escapeCsvField(value: string): string {
 
 function rowForTrack(track: Track, index: number, options: NormalizedExportOptions): string[] {
   const values = [
-    displayTitle(track),
-    displayArtists(track),
+    ...(options.order === 'artist-title'
+      ? [displayArtists(track), displayTitle(track)]
+      : [displayTitle(track), displayArtists(track)]),
     ...(options.includeAlbum ? [displayOptional(track.album, '[专辑缺失]')] : []),
     displayOptional(track.trackId, '[ID缺失]'),
     track.source,
@@ -55,8 +56,7 @@ export function renderCsv(tracks: readonly Track[], options: NormalizedExportOpt
   const eol = lineEndingValue(options);
   const columns = [
     ...(options.includeIndex ? ['序号'] : []),
-    '歌曲名',
-    '歌手',
+    ...(options.order === 'artist-title' ? ['歌手', '歌曲名'] : ['歌曲名', '歌手']),
     ...(options.includeAlbum ? ['专辑'] : []),
     'ID',
     '来源',

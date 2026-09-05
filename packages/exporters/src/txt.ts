@@ -5,6 +5,8 @@ import { lineEndingValue } from './options.js';
 const UNKNOWN_TITLE = '[unknown title]';
 const UNKNOWN_ARTIST = '[unknown artist]';
 
+const singleLine = (value: string): string => value.replace(/[\r\n\u0085\u2028\u2029]+/gu, ' ');
+
 function displayTitle(track: Track): string {
   const title = track.title.trim().length > 0 ? track.title : UNKNOWN_TITLE;
   switch (track.availability) {
@@ -27,13 +29,13 @@ function displayArtists(track: Track): string {
 export function renderTxt(tracks: readonly Track[], options: NormalizedExportOptions): string {
   const eol = lineEndingValue(options);
   const lines = tracks.map((track, index) => {
-    const title = displayTitle(track);
-    const artists = displayArtists(track);
+    const title = singleLine(displayTitle(track));
+    const artists = singleLine(displayArtists(track));
     const main = options.order === 'artist-title'
       ? `${artists} - ${title}`
       : `${title} - ${artists}`;
     const withAlbum = options.includeAlbum && track.album?.trim()
-      ? `${main} - ${track.album}`
+      ? `${main} - ${singleLine(track.album)}`
       : main;
     return options.includeIndex ? `${index + 1}. ${withAlbum}` : withAlbum;
   });

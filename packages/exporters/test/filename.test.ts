@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeFilename } from '../src/index.js';
+import { exportPlaylist, sanitizeFilename } from '../src/index.js';
+import { playlist } from './fixtures.js';
 import { formatLocalDate } from '../src/options.js';
 
 describe('filename sanitization', () => {
@@ -18,11 +19,20 @@ describe('filename sanitization', () => {
     }
   });
 
-  it('preserves Unicode and limits by code points to 180', () => {
+  it('preserves whole Unicode characters within filesystem byte limits', () => {
     const sanitized = sanitizeFilename(`${'歌'.repeat(179)}🌙`);
 
-    expect(Array.from(sanitized)).toHaveLength(180);
-    expect(sanitized.endsWith('🌙')).toBe(true);
+    expect(new TextEncoder().encode(sanitized).length).toBeLessThanOrEqual(240);
+    expect(sanitized).not.toContain('\ufffd');
+    expect(sanitizeFilename('歌🌙')).toBe('歌🌙');
+  });
+
+  it('preserves date and extension for long Unicode playlist names', () => {
+    const artifact = exportPlaylist({ ...playlist, name: '🌙'.repeat(180) }, {
+      format: 'json', date: '2026-09-05',
+    });
+    expect(new TextEncoder().encode(artifact.filename).length).toBeLessThanOrEqual(255);
+    expect(artifact.filename).toMatch(/_2026-09-05\.json$/u);
   });
 
   it('returns a usable fallback for an empty or fully invalid name', () => {

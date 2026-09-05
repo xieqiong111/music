@@ -7,6 +7,12 @@ function decode(bytes: Uint8Array): string {
 }
 
 describe('CSV exporter', () => {
+  it('honors artist-title order in both header and values', () => {
+    const artifact = exportPlaylist(playlist, { format: 'csv', order: 'artist-title' });
+    const [header, first] = decode(artifact.bytes).split('\n');
+    expect(header).toBe('歌手,歌曲名,ID,来源,可用性');
+    expect(first).toBe('歌手甲、歌手乙,歌一,same-track,netease,available');
+  });
   it('writes the fixed RFC 4180 columns in source order and can add index and album', () => {
     const artifact = exportPlaylist(playlist, {
       format: 'csv',

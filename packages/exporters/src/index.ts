@@ -54,7 +54,9 @@ export function exportPlaylist(playlist: Playlist, options: ExportOptions): Expo
   const bytes = bom
     ? Uint8Array.from([0xef, 0xbb, 0xbf, ...encoded])
     : encoded;
-  const baseName = sanitizeFilename(`${playlist.source}_${playlist.name}_${normalized.date}`);
+  // Reserve space for the date and longest extension before truncating the name.
+  const prefix = sanitizeFilename(`${playlist.source}_${playlist.name}`);
+  const baseName = `${prefix}_${normalized.date}`;
 
   return {
     format: normalized.format,
