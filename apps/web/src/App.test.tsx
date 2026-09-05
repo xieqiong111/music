@@ -61,6 +61,18 @@ const service = (overrides: Partial<PlaylistService> = {}): PlaylistService => (
 });
 
 describe('App', () => {
+  it('cancels an online job when switching to a local import', async () => {
+    const mockService = service({ getJob: vi.fn(() => new Promise<JobSnapshot>(() => undefined)) });
+    const user = userEvent.setup();
+    render(<App service={mockService} />);
+    await user.type(screen.getByLabelText('歌单链接或 ID'), '12345');
+    await user.click(screen.getByRole('button', { name: '读取歌单' }));
+    await waitFor(() => expect(mockService.getJob).toHaveBeenCalledWith('job-1'));
+    await user.upload(screen.getByLabelText('选择播放列表文件'),
+      new File(['Name\tArtist\nLocal\tArtist'], 'local.txt', { type: 'text/plain' }));
+    await waitFor(() => expect(mockService.cancelJob).toHaveBeenCalledWith('job-1'));
+    expect(await screen.findByText('Local')).toBeInTheDocument();
+  });
   it('shows all providers, disables unavailable ones, and auto-detects links', async () => {
     const user = userEvent.setup();
     render(<App service={service()} />);

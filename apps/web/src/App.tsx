@@ -130,6 +130,8 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
     setPlaylist(undefined);
     setSnapshot(undefined);
     setImported(false);
+    jobIdRef.current = undefined;
+    setJobId(undefined);
     setStatus('queued');
     try {
       const created = await service.createInspection(effectiveProvider, input.trim());
@@ -183,6 +185,7 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
   };
 
   const importFile = async (file: File): Promise<void> => {
+    const previousJob = active ? jobIdRef.current : undefined;
     const current = ++generation.current;
     setError(undefined);
     setPlaylist(undefined);
@@ -190,6 +193,14 @@ export default function App({ service: injectedService, pollIntervalMs = 250 }: 
     setStatus(undefined);
     setJobId(undefined);
     jobIdRef.current = undefined;
+    if (previousJob !== undefined) {
+      void service.cancelJob(previousJob).catch(caught => {
+        if (generation.current === current &&
+            !(caught instanceof ApiError && caught.code === 'JOB_TERMINAL')) {
+          setError(errorFrom(caught));
+        }
+      });
+    }
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const parsed = await importPlaylistFile(bytes, { filename: file.name });

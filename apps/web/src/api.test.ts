@@ -26,6 +26,18 @@ describe('HttpPlaylistService', () => {
     expect(sessionStorage).toHaveLength(0);
   });
 
+  it('rejects malformed inspection responses at the client boundary', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      jobId: 'job-1',
+      status: 'not-a-job-status',
+    }), { status: 202, headers: { 'content-type': 'application/json' } }));
+    const service = new HttpPlaylistService({ fetchImpl });
+
+    await expect(service.createInspection('netease', '12345')).rejects.toMatchObject({
+      code: 'INVALID_SERVER_RESPONSE',
+    });
+  });
+
   it('returns exact UTF-8 export bytes and decodes the RFC 5987 filename', async () => {
     const bytes = new TextEncoder().encode('夜空中最亮的星 - 逃跑计划\n');
     const fetchImpl = vi.fn(async () => new Response(bytes, {
@@ -79,6 +91,22 @@ describe('HttpPlaylistService', () => {
       result: { tracks: 'not-an-array' },
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const service = new HttpPlaylistService({ fetchImpl });
+    await expect(service.getJob('job-1')).rejects.toMatchObject({
+      code: 'INVALID_SERVER_RESPONSE',
+    });
+  });
+
+  it('rejects progress updates whose counters are not numbers', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      jobId: 'job-1',
+      provider: 'netease',
+      status: 'running',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+      progress: { phase: 'fetching', completed: { value: 1 }, total: 10 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const service = new HttpPlaylistService({ fetchImpl });
+
     await expect(service.getJob('job-1')).rejects.toMatchObject({
       code: 'INVALID_SERVER_RESPONSE',
     });

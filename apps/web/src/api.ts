@@ -89,6 +89,43 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const jobStatuses = new Set<JobStatus>(['queued', 'running', 'completed', 'failed', 'cancelled']);
 
+const parseProgressUpdate = (raw: unknown): ProgressUpdate => {
+  if (!isRecord(raw) || typeof raw.phase !== 'string' ||
+      (raw.completed !== undefined &&
+       (typeof raw.completed !== 'number' || !Number.isFinite(raw.completed))) ||
+      (raw.total !== undefined &&
+       (typeof raw.total !== 'number' || !Number.isFinite(raw.total))) ||
+      (raw.message !== undefined && typeof raw.message !== 'string')) {
+    throw invalidServerResponse();
+  }
+  return {
+    phase: raw.phase,
+    ...(raw.completed === undefined ? {} : { completed: raw.completed }),
+    ...(raw.total === undefined ? {} : { total: raw.total }),
+    ...(raw.message === undefined ? {} : { message: raw.message }),
+  };
+};
+
+const parseJobError = (raw: unknown): JobError => {
+  if (!isRecord(raw) || typeof raw.code !== 'string' || typeof raw.message !== 'string' ||
+      (raw.technicalDetails !== undefined && !isRecord(raw.technicalDetails))) {
+    throw invalidServerResponse();
+  }
+  return {
+    code: raw.code,
+    message: raw.message,
+    ...(raw.technicalDetails === undefined ? {} : { technicalDetails: raw.technicalDetails }),
+  };
+};
+
+const parseJobCreation = (raw: unknown): { readonly jobId: string; readonly status: JobStatus } => {
+  if (!isRecord(raw) || typeof raw.jobId !== 'string' ||
+      typeof raw.status !== 'string' || !jobStatuses.has(raw.status as JobStatus)) {
+    throw invalidServerResponse();
+  }
+  return { jobId: raw.jobId, status: raw.status as JobStatus };
+};
+
 const parseJobSnapshot = (raw: unknown): JobSnapshot => {
   if (!isRecord(raw) || typeof raw.jobId !== 'string' ||
       !providerIdSchema.safeParse(raw.provider).success ||
@@ -98,12 +135,8 @@ const parseJobSnapshot = (raw: unknown): JobSnapshot => {
   }
   const result = raw.result === undefined ? undefined : playlistSchema.safeParse(raw.result);
   if (result !== undefined && !result.success) throw invalidServerResponse();
-  if (raw.progress !== undefined && !isRecord(raw.progress)) throw invalidServerResponse();
-  if (raw.error !== undefined &&
-      (!isRecord(raw.error) || typeof raw.error.code !== 'string' ||
-       typeof raw.error.message !== 'string')) {
-    throw invalidServerResponse();
-  }
+  const progress = raw.progress === undefined ? undefined : parseProgressUpdate(raw.progress);
+  const error = raw.error === undefined ? undefined : parseJobError(raw.error);
   return {
     jobId: raw.jobId,
     provider: raw.provider as ProviderId,
@@ -111,9 +144,9 @@ const parseJobSnapshot = (raw: unknown): JobSnapshot => {
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     ...(typeof raw.finishedAt === 'string' ? { finishedAt: raw.finishedAt } : {}),
-    ...(raw.progress === undefined ? {} : { progress: raw.progress as unknown as ProgressUpdate }),
+    ...(progress === undefined ? {} : { progress }),
     ...(result?.success === true ? { result: result.data } : {}),
-    ...(raw.error === undefined ? {} : { error: raw.error as unknown as JobError }),
+    ...(error === undefined ? {} : { error }),
   };
 };
 
@@ -186,14 +219,11 @@ export class HttpPlaylistService implements PlaylistService {
   }
 
   createInspection(provider: ProviderId, input: string) {
-    return this.#json<{ readonly jobId: string; readonly status: JobStatus }>(
-      '/api/playlists/inspect',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ provider, input: { value: input } }),
-      },
-    );
+    return this.#json<unknown>('/api/playlists/inspect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider, input: { value: input } }),
+    }).then(parseJobCreation);
   }
 
   async getJob(jobId: string): Promise<JobSnapshot> {
