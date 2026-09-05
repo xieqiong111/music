@@ -1,37 +1,41 @@
 #!/usr/bin/env node
-// Docker 冒烟测试：构建镜像 → 以受限配置运行容器 → 验证健康检查、令牌、Origin 白名单
-// 与 API 校验层可达性。网络访问仅限被测 base URL；全部使用合成令牌与合成 origin，
-// 不携带任何真实凭证，也不发起对真实平台的请求（非法输入在校验层即被拒绝）。
+// Docker 冒烟测试：构建镜像 → 以受限配置运行容器 → 验证健康检查、用户名密码登录会话、
+// Origin 白名单与 API 校验层可达性。网络访问仅限被测 base URL；全部使用合成账号与
+// 合成 origin，不携带任何真实凭证，也不发起对真实平台的请求（非法输入在校验层即被拒绝）。
 //
 // 用法：
 //   node scripts/docker-smoke.mjs [选项]
 // 选项：
-//   --image <name>    镜像名（默认 playlist-exporter:smoke）
-//   --skip-build      跳过 docker build，直接使用 --image 指定的已有镜像
-//   --base-url <url>  跳过构建与容器管理，只对已运行的服务执行检查矩阵
-//                     （例如对远程宿主上按 compose 启动的服务复用同一套检查）
-//   --token <token>   与 --base-url 配套的 Bearer 令牌（base-url 模式必填）
-//   --help            显示本说明
+//   --image <name>      镜像名（默认 playlist-exporter:smoke）
+//   --skip-build        跳过 docker build，直接使用 --image 指定的已有镜像
+//   --base-url <url>    跳过构建与容器管理，只对已运行的服务执行检查矩阵
+//                       （例如对远程宿主上按 compose 启动的服务复用同一套检查）
+//   --username <name>   登录用户名（默认 admin；base-url 模式下按被测服务实际凭据传入）
+//   --password <pass>   登录密码（默认 admin）
+//   --help              显示本说明
 //
-// 检查矩阵（覆盖 04 号问题的端口/origin/令牌组合）：
+// 检查矩阵（覆盖登录会话/origin/校验层组合）：
 //   1. /healthz 返回 200 且 status=ok
-//   2. 合法 Origin + 无令牌        → 401 AUTH_REQUIRED
-//   3. 合法 Origin + 错误令牌      → 401 AUTH_REQUIRED
-//   4. 非法 Origin + 正确令牌      → 403 ORIGIN_NOT_ALLOWED
-//   5. 合法 Origin + 正确令牌 + 未知 provider（schema 校验层）→ 400 INVALID_REQUEST
-//   6. 合法 Origin + 正确令牌 + 非法歌单输入（provider 校验层）→ 400 INVALID_PLAYLIST_INPUT
-//   7. localhost origin 变体同样被白名单接受 → 400 INVALID_REQUEST
+//   2. 合法 Origin + 未登录               → 401 AUTH_REQUIRED
+//   3. 合法 Origin + 错误密码登录          → 401 AUTH_REQUIRED
+//   4. 合法 Origin + admin/admin 登录      → 200 并下发 pe_session Cookie（HttpOnly + SameSite=Strict）
+//   5. 非法 Origin + 有效会话             → 403 ORIGIN_NOT_ALLOWED
+//   6. 合法 Origin + 有效会话 + 未知 provider（schema 校验层）→ 400 INVALID_REQUEST
+//   7. 合法 Origin + 有效会话 + 非法歌单输入（provider 校验层）→ 400 INVALID_PLAYLIST_INPUT
+//   8. localhost origin 变体同样被白名单接受 → 400 INVALID_REQUEST
 //   （默认运行会先以随机空闲宿主端口验证"自定义宿主端口"，再尝试以 4319 复现
 //    compose 默认映射；4319 被占用时跳过并明确记录，不算失败。）
 //
 // 脚本结构：容器/镜像管理（build/run/清理）与"对 base URL 的检查项"完全分离，
-// 检查矩阵由纯函数 buildCheckPlan 生成，便于在无 Docker 的宿主上单独复用。
-// 容器生命周期（F1 修复）：每次运行使用唯一容器名（playlist-exporter-smoke-<8位随机hex>，
-// 两轮 run 各自唯一），docker run -d 成功后从 stdout 取容器 ID 并立即登记清理；
-// run 失败（如名称冲突）不登记任何清理目标，finally 只按容器 ID 清理本次创建的容器，
-// 绝不按名称猜测所有权。runDocker 失败详情中的敏感环境变量值经 redactDockerArgs 脱敏。
-// runMain 的依赖（spawnSync/fetch/端口探测/健康检查节奏）均为可注入参数，
-// 默认值即真实实现，便于在无 Docker 的宿主上做内存级回归测试。
+// 检查矩阵由纯函数 buildCheckPlan 生成（分"登录前/登录后"两个阶段），便于在无
+// Docker 的宿主上单独复用。容器生命周期（F1 修复）：每次运行使用唯一容器名
+// （playlist-exporter-smoke-<8位随机hex>，两轮 run 各自唯一），docker run -d 成功后
+// 从 stdout 取容器 ID 并立即登记清理；run 失败（如名称冲突）不登记任何清理目标，
+// finally 只按容器 ID 清理本次创建的容器，绝不按名称猜测所有权。runDocker 失败详情
+// 中的敏感环境变量值经 redactDockerArgs 脱敏；会话 Cookie 值在任何失败详情里都会被
+// 防御性脱敏（redactSessionCookie），绝不打印明文。runMain 的依赖（spawnSync/fetch/
+// 端口探测/健康检查节奏）均为可注入参数，默认值即真实实现，便于在无 Docker 的宿主
+// 上做内存级回归测试。
 
 import { spawnSync as spawnSyncNode } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -52,6 +56,10 @@ export const SYNTHETIC_INVALID_PLAYLIST_INPUT = '合成冒烟测试-无效输入
 // 合成未知 provider：contracts 的 providerIdSchema 是固定枚举，schema 层即拒绝。
 export const SYNTHETIC_UNKNOWN_PROVIDER = 'example-invalid-provider';
 const FOREIGN_ORIGIN = 'https://evil.example';
+const LOGIN_PATH = '/api/auth/login';
+const SESSION_COOKIE_NAME = 'pe_session';
+const DEFAULT_USERNAME = 'admin';
+const DEFAULT_PASSWORD = 'admin';
 
 export class SmokeError extends Error {
   constructor(step, message) {
@@ -62,7 +70,7 @@ export class SmokeError extends Error {
 }
 
 const fail = (step, message) => {
-  process.stderr.write(`[docker-smoke] ✗ ${step} 失败: ${message}\n`);
+  process.stderr.write(`[docker-smoke] ✗ ${step} 失败: ${redactSessionCookie(message)}\n`);
   process.exitCode = 1;
   throw new SmokeError(step, message);
 };
@@ -74,7 +82,8 @@ export const parseArgs = (argv) => {
     image: DEFAULT_IMAGE,
     skipBuild: false,
     baseUrl: undefined,
-    token: undefined,
+    username: DEFAULT_USERNAME,
+    password: DEFAULT_PASSWORD,
     help: false,
   };
   const readValue = (flag, index) => {
@@ -98,8 +107,12 @@ export const parseArgs = (argv) => {
         args.baseUrl = readValue(flag, index);
         index += 1;
         break;
-      case '--token':
-        args.token = readValue(flag, index);
+      case '--username':
+        args.username = readValue(flag, index);
+        index += 1;
+        break;
+      case '--password':
+        args.password = readValue(flag, index);
         index += 1;
         break;
       case '--help':
@@ -116,9 +129,6 @@ export const parseArgs = (argv) => {
       new URL(args.baseUrl);
     } catch {
       throw new SmokeError('arguments', `--base-url 不是合法 URL: ${args.baseUrl}`);
-    }
-    if (args.token === undefined || args.token === '') {
-      throw new SmokeError('arguments', 'base-url 模式必须同时提供 --token（被测服务的 Bearer 令牌）');
     }
   }
   return args;
@@ -144,65 +154,93 @@ const INSPECT_PATH = '/api/playlists/inspect';
 
 // 生成对单个服务的检查计划。所有请求体都是"到达校验层即被拒绝"的合成输入，
 // 即使服务端配置失误也不会触发对真实平台的访问。
-export const buildCheckPlan = ({ token, legalOrigins, foreignOrigin = FOREIGN_ORIGIN }) => {
+// 阶段 phase='pre' 在登录前执行（无需会话）；phase='post' 携带登录拿到的
+// 会话 Cookie 执行。登录检查项 captureCookie=true，由 runChecks 捕获后串起两阶段。
+export const buildCheckPlan = ({
+  phase,
+  cookie,
+  username = DEFAULT_USERNAME,
+  password = DEFAULT_PASSWORD,
+  legalOrigins,
+  foreignOrigin = FOREIGN_ORIGIN,
+}) => {
   if (legalOrigins === undefined || legalOrigins.length === 0) {
     throw new SmokeError('check-plan', 'legalOrigins 不能为空');
   }
-  if (token === undefined || token === '') {
-    throw new SmokeError('check-plan', 'token 不能为空');
+  if (phase === 'pre') {
+    const origin = legalOrigins[0];
+    const post = (headers, body) => ({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    const neteaseBody = { provider: 'netease', input: { value: SYNTHETIC_INVALID_PLAYLIST_INPUT } };
+    return [
+      {
+        name: 'healthz',
+        detail: 'GET /healthz 返回 200 且 status=ok',
+        request: { path: '/healthz', init: { method: 'GET' } },
+        expect: { status: 200, code: undefined },
+      },
+      {
+        name: 'auth-required',
+        detail: '合法 Origin + 未登录 → 401 AUTH_REQUIRED',
+        request: { path: INSPECT_PATH, init: post({ origin }, neteaseBody) },
+        expect: { status: 401, code: 'AUTH_REQUIRED' },
+      },
+      {
+        name: 'login-wrong-password',
+        detail: '合法 Origin + 错误密码登录 → 401 AUTH_REQUIRED',
+        request: {
+          path: LOGIN_PATH,
+          init: post({ origin }, {
+            username,
+            password: `wrong-${randomBytes(8).toString('hex')}`,
+            duration: '7d',
+          }),
+        },
+        expect: { status: 401, code: 'AUTH_REQUIRED' },
+      },
+      {
+        name: 'login-success',
+        detail: '合法 Origin + 默认账号登录 → 200 并下发 pe_session Cookie',
+        request: {
+          path: LOGIN_PATH,
+          init: post({ origin }, { username, password, duration: '7d' }),
+        },
+        expect: { status: 200 },
+        captureCookie: true,
+      },
+    ];
+  }
+  if (typeof cookie !== 'string' || cookie === '') {
+    throw new SmokeError('check-plan', 'post 阶段必须提供登录拿到的会话 cookie');
   }
   const origin = legalOrigins[0];
   const post = (headers, body) => ({
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: { 'content-type': 'application/json', cookie: `pe_session=${cookie}`, ...headers },
     body: JSON.stringify(body),
   });
   const neteaseBody = { provider: 'netease', input: { value: SYNTHETIC_INVALID_PLAYLIST_INPUT } };
   const unknownProviderBody = { provider: SYNTHETIC_UNKNOWN_PROVIDER, input: { value: SYNTHETIC_INVALID_PLAYLIST_INPUT } };
   const plan = [
     {
-      name: 'healthz',
-      detail: 'GET /healthz 返回 200 且 status=ok',
-      request: { path: '/healthz', init: { method: 'GET' } },
-      expect: { status: 200, code: undefined },
-    },
-    {
-      name: 'auth-required',
-      detail: '合法 Origin + 无令牌 → 401 AUTH_REQUIRED',
-      request: { path: INSPECT_PATH, init: post({ origin }, neteaseBody) },
-      expect: { status: 401, code: 'AUTH_REQUIRED' },
-    },
-    {
-      name: 'wrong-token',
-      detail: '合法 Origin + 错误令牌 → 401 AUTH_REQUIRED',
-      request: {
-        path: INSPECT_PATH,
-        init: post({ origin, authorization: `Bearer wrong-${randomBytes(8).toString('hex')}` }, neteaseBody),
-      },
-      expect: { status: 401, code: 'AUTH_REQUIRED' },
-    },
-    {
       name: 'origin-not-allowed',
-      detail: '非法 Origin + 正确令牌 → 403 ORIGIN_NOT_ALLOWED',
-      request: {
-        path: INSPECT_PATH,
-        init: post({ origin: foreignOrigin, authorization: `Bearer ${token}` }, neteaseBody),
-      },
+      detail: '非法 Origin + 有效会话 → 403 ORIGIN_NOT_ALLOWED',
+      request: { path: INSPECT_PATH, init: post({ origin: foreignOrigin }, neteaseBody) },
       expect: { status: 403, code: 'ORIGIN_NOT_ALLOWED' },
     },
     {
       name: 'validation-schema-reached',
-      detail: '合法 Origin + 正确令牌 + 未知 provider → 400 INVALID_REQUEST（schema 校验层，零出站）',
-      request: {
-        path: INSPECT_PATH,
-        init: post({ origin, authorization: `Bearer ${token}` }, unknownProviderBody),
-      },
+      detail: '合法 Origin + 有效会话 + 未知 provider → 400 INVALID_REQUEST（schema 校验层，零出站）',
+      request: { path: INSPECT_PATH, init: post({ origin }, unknownProviderBody) },
       expect: { status: 400, code: 'INVALID_REQUEST' },
     },
     {
       name: 'validation-input-reached',
-      detail: '合法 Origin + 正确令牌 + 非法歌单输入 → 400 INVALID_PLAYLIST_INPUT（provider 校验层，零出站）',
-      request: { path: INSPECT_PATH, init: post({ origin, authorization: `Bearer ${token}` }, neteaseBody) },
+      detail: '合法 Origin + 有效会话 + 非法歌单输入 → 400 INVALID_PLAYLIST_INPUT（provider 校验层，零出站）',
+      request: { path: INSPECT_PATH, init: post({ origin }, neteaseBody) },
       expect: { status: 400, code: 'INVALID_PLAYLIST_INPUT' },
     },
   ];
@@ -210,10 +248,7 @@ export const buildCheckPlan = ({ token, legalOrigins, foreignOrigin = FOREIGN_OR
     plan.push({
       name: 'loopback-variant-accepted',
       detail: `loopback origin 变体 ${legalOrigins[1]} 同样在白名单内 → 400 INVALID_REQUEST`,
-      request: {
-        path: INSPECT_PATH,
-        init: post({ origin: legalOrigins[1], authorization: `Bearer ${token}` }, unknownProviderBody),
-      },
+      request: { path: INSPECT_PATH, init: post({ origin: legalOrigins[1] }, unknownProviderBody) },
       expect: { status: 400, code: 'INVALID_REQUEST' },
     });
   }
@@ -222,38 +257,81 @@ export const buildCheckPlan = ({ token, legalOrigins, foreignOrigin = FOREIGN_OR
 
 // ---------- 检查执行：只依赖 base URL，不依赖 Docker ----------
 
-export const runChecks = async ({ baseUrl, token, legalOrigins, fetch: fetchImpl = globalThis.fetch }) => {
+// 防御性脱敏：任何进入日志/错误详情的文本都不得包含会话 Cookie 明文。
+export const redactSessionCookie = (text) => {
+  if (typeof text !== 'string') return text;
+  return text.replace(
+    new RegExp(`(${SESSION_COOKIE_NAME}=)[0-9a-zA-Z]{8,}`, 'gu'),
+    `$1[REDACTED]`,
+  );
+};
+
+// 从 Set-Cookie 头提取 pe_session 的值（去掉属性部分）。
+const extractSessionCookie = (headers) => {
+  const setCookies = typeof headers?.getSetCookie === 'function' ? headers.getSetCookie() : [];
+  const entry = setCookies.find(value => value.startsWith(`${SESSION_COOKIE_NAME}=`));
+  if (entry === undefined) return undefined;
+  const value = entry.slice(SESSION_COOKIE_NAME.length + 1).split(';', 1)[0] ?? '';
+  return value === '' ? undefined : value;
+};
+
+export const runChecks = async ({
+  baseUrl,
+  username = DEFAULT_USERNAME,
+  password = DEFAULT_PASSWORD,
+  legalOrigins,
+  fetch: fetchImpl = globalThis.fetch,
+}) => {
   const results = [];
-  const plan = buildCheckPlan({ token, legalOrigins });
-  for (const check of plan) {
-    let response;
-    try {
-      response = await fetchImpl(`${baseUrl}${check.request.path}`, {
-        ...check.request.init,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  let sessionCookie;
+  for (const phase of ['pre', 'post']) {
+    const plan = buildCheckPlan({ phase, cookie: sessionCookie, username, password, legalOrigins });
+    for (const check of plan) {
+      let response;
+      try {
+        response = await fetchImpl(`${baseUrl}${check.request.path}`, {
+          ...check.request.init,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (error) {
+        fail(check.name, `请求 ${check.request.path} 异常: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const rawBody = await response.text();
+      let bodyJson;
+      try {
+        bodyJson = JSON.parse(rawBody);
+      } catch {
+        bodyJson = undefined;
+      }
+      if (check.captureCookie === true) {
+        sessionCookie = extractSessionCookie(response.headers);
+        if (sessionCookie === undefined) {
+          fail(check.name, '登录成功但响应未下发 pe_session Cookie');
+        }
+        const setCookie = response.headers.getSetCookie?.().find(value =>
+          value.startsWith(`${SESSION_COOKIE_NAME}=`)) ?? '';
+        for (const attribute of ['HttpOnly', 'SameSite=Strict']) {
+          if (!setCookie.includes(attribute)) {
+            fail(check.name, `pe_session Cookie 缺少 ${attribute} 属性: ${redactSessionCookie(setCookie)}`);
+          }
+        }
+        if (!/^[0-9a-f]{64}$/u.test(sessionCookie)) {
+          fail(check.name, 'pe_session Cookie 不是 32 字节 hex 会话令牌（服务端契约漂移）');
+        }
+      }
+      if (response.status !== check.expect.status) {
+        fail(check.name, `${check.request.path} 期望 HTTP ${check.expect.status}，实际 ${response.status}。响应: ${redactSessionCookie(rawBody.slice(0, 300))}`);
+      }
+      if (check.expect.code !== undefined && bodyJson?.code !== check.expect.code) {
+        fail(check.name, `${check.request.path} 期望错误码 ${check.expect.code}，实际 ${bodyJson?.code ?? '（无 code 字段）'}。响应: ${redactSessionCookie(rawBody.slice(0, 300))}`);
+      }
+      results.push({
+        step: check.name,
+        ok: true,
+        detail: `${check.detail}；实际 HTTP ${response.status}${check.expect.code === undefined ? '' : ` code=${bodyJson?.code}`}`,
       });
-    } catch (error) {
-      fail(check.name, `请求 ${check.request.path} 异常: ${error instanceof Error ? error.message : String(error)}`);
+      process.stdout.write(`[docker-smoke] ✓ ${check.name}: HTTP ${response.status}${check.expect.code === undefined ? '' : ` (${bodyJson?.code})`}\n`);
     }
-    const rawBody = await response.text();
-    let bodyJson;
-    try {
-      bodyJson = JSON.parse(rawBody);
-    } catch {
-      bodyJson = undefined;
-    }
-    if (response.status !== check.expect.status) {
-      fail(check.name, `${check.request.path} 期望 HTTP ${check.expect.status}，实际 ${response.status}。响应: ${rawBody.slice(0, 300)}`);
-    }
-    if (check.expect.code !== undefined && bodyJson?.code !== check.expect.code) {
-      fail(check.name, `${check.request.path} 期望错误码 ${check.expect.code}，实际 ${bodyJson?.code ?? '（无 code 字段）'}。响应: ${rawBody.slice(0, 300)}`);
-    }
-    results.push({
-      step: check.name,
-      ok: true,
-      detail: `${check.detail}；实际 HTTP ${response.status}${check.expect.code === undefined ? '' : ` code=${bodyJson?.code}`}`,
-    });
-    process.stdout.write(`[docker-smoke] ✓ ${check.name}: HTTP ${response.status}${check.expect.code === undefined ? '' : ` (${bodyJson?.code})`}\n`);
   }
   return results;
 };
@@ -290,16 +368,18 @@ const waitForHealth = async ({
 
 // docker 命令失败时会把参数拼进错误信息；-e/--env 之后的敏感 KEY=VALUE
 // 必须把值替换为 [REDACTED] 后才允许进入日志（纯函数，便于单测）。
+// ACCESS_TOKEN 已从部署面移除，此处仅作防御性保留；会话 Cookie 值由
+// redactSessionCookie 兜底脱敏。
 const REDACTED = '[REDACTED]';
 const SENSITIVE_ENV_KEYS = new Set(['ACCESS_TOKEN', 'APPLE_DEVELOPER_TOKEN']);
 
 export const redactDockerArgs = (args) => args.map((arg, index) => {
   const previous = index > 0 ? args[index - 1] : undefined;
-  if (previous !== '-e' && previous !== '--env') return arg;
+  if (previous !== '-e' && previous !== '--env') return redactSessionCookie(arg);
   const separator = arg.indexOf('=');
-  if (separator <= 0) return arg;
+  if (separator <= 0) return redactSessionCookie(arg);
   const key = arg.slice(0, separator);
-  if (!SENSITIVE_ENV_KEYS.has(key)) return arg;
+  if (!SENSITIVE_ENV_KEYS.has(key)) return redactSessionCookie(arg);
   return `${key}=${REDACTED}`;
 });
 
@@ -312,7 +392,7 @@ const runDocker = (step, args, { capture = false, spawnSync = spawnSyncNode } = 
   if (result.error !== undefined) {
     fail(step, `无法执行 docker 命令（${result.error.code ?? result.error.message}）。` +
       '请确认 Docker Desktop/Engine 已安装并正在运行；若只需对已运行的服务执行检查，' +
-      '可使用: node scripts/docker-smoke.mjs --base-url <url> --token <token>');
+      '可使用: node scripts/docker-smoke.mjs --base-url <url>');
   }
   if (result.status !== 0) {
     const detail = capture ? `\nstdout: ${result.stdout ?? ''}\nstderr: ${result.stderr ?? ''}` :
@@ -347,10 +427,11 @@ const runSmokeContainer = async ({
   healthTimeoutMs,
   healthIntervalMs,
 }) => {
-  const token = randomBytes(32).toString('hex');
   // 与 docker-compose.yml 的派生规则一致：宿主映射端口对应的 127.0.0.1/localhost origin。
   const legalOrigins = withLoopbackVariants(`http://127.0.0.1:${hostPort}`);
   const baseUrl = `http://127.0.0.1:${hostPort}`;
+  // 只读根文件系统下，认证数据目录 /data 以 tmpfs 挂载（容器一次性场景，
+  // 无需持久化）；uid/gid 对齐镜像内非 root 用户 10001。
   const runResult = runDocker('docker-run', [
     'run', '-d', '--rm',
     '--name', containerName,
@@ -358,10 +439,10 @@ const runSmokeContainer = async ({
     '-e', 'HOST=0.0.0.0',
     '-e', 'PORT=4319',
     '-e', 'WEB_DIST=/app/web/dist',
-    '-e', `ACCESS_TOKEN=${token}`,
     '-e', `ALLOWED_ORIGINS=${legalOrigins.join(',')}`,
     '--read-only',
     '--tmpfs', '/tmp:size=16m,mode=1777',
+    '--tmpfs', '/data:size=16m,uid=10001,gid=10001',
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges:true',
     image,
@@ -384,7 +465,7 @@ const runSmokeContainer = async ({
     intervalMs: healthIntervalMs,
   });
   process.stdout.write(`[docker-smoke] 健康检查通过: ${JSON.stringify(health)}\n`);
-  const checks = await runChecks({ baseUrl, token, legalOrigins, fetch: fetchImpl });
+  const checks = await runChecks({ baseUrl, legalOrigins, fetch: fetchImpl });
   return { label, containerName, containerId, baseUrl, hostPort, checks };
 };
 
@@ -392,11 +473,12 @@ const printUsage = () => {
   process.stdout.write(`用法: node scripts/docker-smoke.mjs [选项]
 
 选项:
-  --image <name>    镜像名（默认 ${DEFAULT_IMAGE}）
-  --skip-build      跳过 docker build，直接使用 --image 指定的已有镜像
-  --base-url <url>  跳过构建与容器管理，只对已运行的服务执行检查矩阵
-  --token <token>   与 --base-url 配套的 Bearer 令牌（base-url 模式必填）
-  --help            显示本说明
+  --image <name>      镜像名（默认 ${DEFAULT_IMAGE}）
+  --skip-build        跳过 docker build，直接使用 --image 指定的已有镜像
+  --base-url <url>    跳过构建与容器管理，只对已运行的服务执行检查矩阵
+  --username <name>   登录用户名（默认 ${DEFAULT_USERNAME}）
+  --password <pass>   登录密码（默认 ${DEFAULT_PASSWORD}）
+  --help              显示本说明
 `);
 };
 
@@ -430,7 +512,13 @@ export const runMain = async ({
   if (args.baseUrl !== undefined) {
     const url = new URL(args.baseUrl);
     const legalOrigins = withLoopbackVariants(url.origin);
-    const checks = await runChecks({ baseUrl: url.origin, token: args.token, legalOrigins, fetch: fetchImpl });
+    const checks = await runChecks({
+      baseUrl: url.origin,
+      username: args.username,
+      password: args.password,
+      legalOrigins,
+      fetch: fetchImpl,
+    });
     process.stdout.write(`\n${JSON.stringify({ ok: true, mode: 'base-url', baseUrl: url.origin, checks }, null, 2)}\n`);
     process.stdout.write('[docker-smoke] 全部检查通过。\n');
     return;

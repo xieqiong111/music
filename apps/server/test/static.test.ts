@@ -1,8 +1,9 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createServerApp } from '../src/app.js';
+import { createAuthStore } from '../src/auth.js';
 import type { ServerConfig } from '../src/config.js';
 import { startServer } from '../src/index.js';
 import { createJobRegistry } from '../src/jobs.js';
@@ -10,7 +11,7 @@ import { createJobRegistry } from '../src/jobs.js';
 const config = (overrides: Partial<ServerConfig> = {}): ServerConfig => ({
   host: '127.0.0.1',
   port: 4319,
-  accessToken: undefined,
+  dataDir: '/data',
   allowedOrigins: ['http://127.0.0.1:4319'],
   maxBodyBytes: 1_048_576,
   maxConcurrentJobs: 1,
@@ -46,6 +47,17 @@ const createWebDistFixture = (): Fixture => {
   };
 };
 
+const authDirs: string[] = [];
+afterAll(() => {
+  for (const dir of authDirs) rmSync(dir, { recursive: true, force: true });
+});
+
+const createAuthStoreForTest = () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'playlist-exporter-static-auth-'));
+  authDirs.push(dataDir);
+  return createAuthStore({ dataDir });
+};
+
 const createApp = (overrides: Partial<ServerConfig> = {}, webDistRoot?: string) => {
   const selectedConfig = config(overrides);
   const jobs = createJobRegistry({
@@ -62,6 +74,7 @@ const createApp = (overrides: Partial<ServerConfig> = {}, webDistRoot?: string) 
       },
     },
     jobs,
+    auth: createAuthStoreForTest(),
     webDistRoot,
   });
   return { app, jobs };
@@ -152,14 +165,15 @@ describe('WEB_DIST static hosting', () => {
   it('does not intercept /healthz or /api/* when WEB_DIST is configured', async () => {
     const fixture = createWebDistFixture();
     try {
-      const { app, jobs } = createApp({ accessToken: 'static-secret' }, fixture.webRoot);
+      const { app, jobs } = createApp({}, fixture.webRoot);
       const health = await app.request('/healthz');
       expect(health.status).toBe(200);
       expect(await health.json()).toEqual({ status: 'ok' });
 
+      // /api/* 在托管 UI 的同时依旧受会话保护：未登录 401。
       const api = await app.request('/api/jobs/job-1');
       expect(api.status).toBe(401);
-      expect(await api.json()).toMatchObject({ code: 'AUTH_REQUIRED' });
+      expect(await api.json()).toMatchObject({ code: 'AUTH_REQUIRED', message: '请先登录' });
       jobs.close();
     } finally {
       fixture.dispose();
@@ -170,7 +184,12 @@ describe('WEB_DIST static hosting', () => {
     const fixture = createWebDistFixture();
     try {
       const serve = vi.fn(() => ({ once: vi.fn() }) as never);
-      const runtime = startServer({ env: { WEB_DIST: fixture.webRoot }, serveImpl: serve });
+      const dataDir = mkdtempSync(join(tmpdir(), 'playlist-exporter-static-run-'));
+      authDirs.push(dataDir);
+      const runtime = startServer({
+        env: { WEB_DIST: fixture.webRoot, DATA_DIR: dataDir },
+        serveImpl: serve,
+      });
       expect(serve).toHaveBeenCalledOnce();
       const response = await runtime.app.request('/');
       expect(response.status).toBe(200);
@@ -178,7 +197,7 @@ describe('WEB_DIST static hosting', () => {
       runtime.jobs.close();
 
       expect(() => startServer({
-        env: { WEB_DIST: join(fixture.outsideFile, 'missing-child') },
+        env: { WEB_DIST: join(fixture.outsideFile, 'missing-child'), DATA_DIR: dataDir },
         serveImpl: serve,
       })).toThrow(/WEB_DIST/);
     } finally {

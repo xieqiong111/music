@@ -1,12 +1,44 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createRestrictedFetch, startServer } from '../src/index.js';
 
 describe('server runtime boundary', () => {
   it('rejects unsafe bind config before calling serve', () => {
     const serve = vi.fn();
-    expect(() => startServer({ env: { HOST: '0.0.0.0' }, serveImpl: serve as never }))
-      .toThrow(/ACCESS_TOKEN/);
+    expect(() => startServer({ env: { PORT: 'not-a-port' }, serveImpl: serve as never }))
+      .toThrow(/PORT/);
     expect(serve).not.toHaveBeenCalled();
+  });
+
+  it('ignores the deprecated ACCESS_TOKEN and bootstraps the default account', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'playlist-exporter-runtime-'));
+    try {
+      const serve = vi.fn(() => ({ once: vi.fn() }) as never);
+      const warnings: string[] = [];
+      const runtime = startServer({
+        env: {
+          ACCESS_TOKEN: 'legacy-token-should-be-ignored',
+          DATA_DIR: dataDir,
+        },
+        serveImpl: serve,
+        warn: message => warnings.push(message),
+      });
+      expect(serve).toHaveBeenCalledOnce();
+      // 废弃令牌被忽略（仅警告，不进入配置），首次启动自动创建默认账号。
+      expect(warnings).toContain('检测到已废弃的 ACCESS_TOKEN，已忽略');
+      expect(warnings).toContain('已创建默认账号 admin/admin，请尽快修改');
+      expect(JSON.stringify(runtime.config)).not.toContain('legacy-token-should-be-ignored');
+      const persisted = JSON.parse(readFileSync(join(dataDir, 'auth.json'), 'utf8')) as {
+        users: { username: string }[];
+      };
+      expect(persisted.users).toHaveLength(1);
+      expect(persisted.users[0]).toMatchObject({ username: 'admin' });
+      runtime.jobs.close();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it('allows only fixed HTTPS provider hosts through the runtime fetch boundary', async () => {

@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { isLoopbackHost, loadServerConfig } from '../src/config.js';
 
 describe('server config', () => {
-  it('uses secure loopback defaults', () => {
+  it('uses secure loopback defaults with the /data auth directory', () => {
     expect(loadServerConfig({})).toEqual({
       host: '127.0.0.1',
       port: 4319,
-      accessToken: undefined,
+      dataDir: '/data',
+      localLibraryDataFile: '/data/local-library.json',
       appleDeveloperToken: undefined,
       allowedOrigins: ['http://127.0.0.1:4319', 'http://localhost:4319'],
       maxBodyBytes: 1_048_576,
@@ -16,29 +17,41 @@ describe('server config', () => {
     });
   });
 
+  it('ignores a deprecated ACCESS_TOKEN and warns once instead of failing', () => {
+    const warnings: string[] = [];
+    const config = loadServerConfig({ ACCESS_TOKEN: 'legacy-secret' }, message => warnings.push(message));
+    expect(warnings).toEqual(['检测到已废弃的 ACCESS_TOKEN，已忽略']);
+    expect(JSON.stringify(config)).not.toContain('legacy-secret');
+    expect(config).not.toHaveProperty('accessToken');
+
+    expect(loadServerConfig({}, message => warnings.push(message))).toBeDefined();
+    expect(warnings).toHaveLength(1);
+  });
+
   it.each(['127.0.0.1', '127.255.255.255', '::1', '::ffff:127.0.0.1'])(
     'recognizes numeric loopback %s',
     host => expect(isLoopbackHost(host)).toBe(true),
   );
 
-  it.each(['0.0.0.0', '::', 'localhost', '192.168.1.20', 'example.com'])(
-    'requires a token for non-loopback host %s',
-    host => expect(() => loadServerConfig({ HOST: host })).toThrow(/ACCESS_TOKEN/),
-  );
+  it('no longer requires a token for non-loopback hosts', () => {
+    for (const host of ['0.0.0.0', '::', 'localhost', '192.168.1.20', 'example.com']) {
+      expect(() => loadServerConfig({ HOST: host })).not.toThrow();
+    }
+    expect(loadServerConfig({ HOST: '0.0.0.0' }).allowedOrigins).toEqual([]);
+  });
 
-  it('accepts non-loopback only with a token and never trims it', () => {
-    expect(loadServerConfig({ HOST: '0.0.0.0', ACCESS_TOKEN: '  secret  ' }))
-      .toMatchObject({ host: '0.0.0.0', accessToken: '  secret  ' });
+  it('injects the auth data directory from DATA_DIR and rejects unsafe values', () => {
+    expect(loadServerConfig({ DATA_DIR: '/srv/playlist-data' }).dataDir).toBe('/srv/playlist-data');
+    expect(loadServerConfig({ DATA_DIR: '' }).dataDir).toBe('/data');
+    expect(loadServerConfig({ DATA_DIR: '   ' }).dataDir).toBe('/data');
+    for (const invalid of ['line\nbreak', 'tab\tvalue', 'nul\u0000byte', 'del\u007fbyte']) {
+      expect(() => loadServerConfig({ DATA_DIR: invalid })).toThrow(/DATA_DIR/);
+    }
   });
 
   it.each(['', '0', '-1', '65536', '1.5', 'abc', ' 4319'])(
     'rejects invalid PORT %s',
     port => expect(() => loadServerConfig({ PORT: port })).toThrow(/PORT/),
-  );
-
-  it.each(['', ' ', 'line\nbreak', 'tab\tvalue'])(
-    'rejects an unsafe configured token',
-    token => expect(() => loadServerConfig({ ACCESS_TOKEN: token })).toThrow(/ACCESS_TOKEN/),
   );
 
   it('leaves the Apple developer token unconfigured by default', () => {
@@ -90,10 +103,9 @@ describe('server config', () => {
 
 describe('server config origin canonicalization', () => {
   // Mirrors docker-compose.yml: the container always receives an explicit
-  // ALLOWED_ORIGINS derived from the host PORT plus a synthetic token.
+  // ALLOWED_ORIGINS derived from the host PORT (no token is involved anymore).
   const composeEnv = (port: string): Record<string, string> => ({
     HOST: '0.0.0.0',
-    ACCESS_TOKEN: 'synthetic-token',
     PORT: port,
     ALLOWED_ORIGINS: `http://127.0.0.1:${port},http://localhost:${port}`,
   });
@@ -141,7 +153,7 @@ describe('server config origin canonicalization', () => {
   });
 
   it('derives no default origins for a non-loopback host', () => {
-    expect(loadServerConfig({ HOST: '0.0.0.0', ACCESS_TOKEN: 'secret' }).allowedOrigins)
+    expect(loadServerConfig({ HOST: '0.0.0.0' }).allowedOrigins)
       .toEqual([]);
   });
 });

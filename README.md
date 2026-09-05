@@ -66,14 +66,16 @@ pnpm --filter @playlist-exporter/web exec vite preview --host 127.0.0.1 --port 4
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `HOST` | `127.0.0.1` | 监听地址。**非回环地址（如 LAN IP）时必须同时设置 `ACCESS_TOKEN`，否则服务拒绝启动** |
+| `HOST` | `127.0.0.1` | 监听地址 |
 | `PORT` | `4319` | 监听端口 |
-| `ACCESS_TOKEN` | 未设置 | Bearer 访问令牌。回环监听可不设置；令牌长度不超过 4096 字节 |
+| `DATA_DIR` | `/data` | 认证数据目录：账号 `auth.json` 与会话 `sessions.json` 保存在这里。容器内为卷挂载点；本地裸跑建议显式指向一个可写目录 |
 | `ALLOWED_ORIGINS` | 回环来源 | 逗号分隔的完整 origin 白名单（协议 + 域名 + 端口）。非回环监听且未设置时默认为空（拒绝所有跨源请求） |
 | `MAX_BODY_BYTES` | `1048576` | 请求体上限，固定 1 MiB，不可调大 |
 | `MAX_CONCURRENT_JOBS` | `2` | 同时执行的歌单读取任务数 |
 | `MAX_QUEUED_JOBS` | `100` | 排队任务上限，超出返回 429 |
 | `JOB_TTL_MS` | `900000` | 已结束任务在内存中的保留时长（15 分钟），过期后任务 ID 失效 |
+
+> 旧版 `ACCESS_TOKEN` 已废弃：环境变量中若仍残留该值，服务端会忽略它并在启动日志中提示"检测到已废弃的 ACCESS_TOKEN，已忽略"。
 
 ### 方式二：Docker（NAS）
 
@@ -81,19 +83,24 @@ pnpm --filter @playlist-exporter/web exec vite preview --host 127.0.0.1 --port 4
 
 ```bash
 cp .env.example .env
-# 编辑 .env：必须设置 ACCESS_TOKEN（强随机值）
 docker compose up -d --build
 ```
 
 要求与风险提示：
 
-- **必须设置 `ACCESS_TOKEN`**：这是容器场景下访问 API 的唯一凭证。
+- **用户名密码登录**：首次启动自动创建默认账号 `admin/admin`（启动日志会提示"已创建默认账号 admin/admin，请尽快修改"）。打开 Web 界面登录后，请立即在界面中修改用户名与密码。账号以 scrypt 加盐哈希存于数据卷 `auth.json`，不存明文；`sessions.json` 保存登录会话，重启后登录态保留。请定期备份 `DATA_DIR` 下的 `auth.json` 与 `sessions.json`。
 - **默认仅映射 `127.0.0.1`**：即只有宿主机本机可以访问。
-- **浏览器跨源白名单已由 compose 显式配置**：默认服务会把 `http://127.0.0.1:<PORT>` 与 `http://localhost:<PORT>`（`PORT` 为 `.env` 中的宿主端口）作为 `ALLOWED_ORIGINS` 传入容器，因此从这两个地址打开 PWA 即可正常调用 API，无需额外配置。若通过其它 origin 访问，必须把该完整 origin（协议+主机+端口）加入 `ALLOWED_ORIGINS`。
+- **浏览器跨源白名单已由 compose 显式配置**：默认服务会把 `http://127.0.0.1:<PORT>` 与 `http://localhost:<PORT>`（`PORT` 为 `.env` 中的宿主端口）作为 `ALLOWED_ORIGINS` 传入容器，因此从这两个地址打开 PWA 即可正常登录使用，无需额外配置。若通过其它 origin 访问，必须把该完整 origin（协议+主机+端口）加入 `ALLOWED_ORIGINS`。
 - 提供 **LAN profile** 用于把服务暴露到局域网（便于从其它设备访问）。这属于高风险操作：局域网内的任何设备都能尝试访问该服务。启用 LAN profile 前请确认你理解风险，并务必：
-  1. 使用足够长的随机令牌；不要将端口直接映射到 `0.0.0.0` 而不设置令牌。
+  1. 启动后立即登录并修改默认账号 `admin/admin` 的用户名与密码（默认弱口令是局域网部署最大的风险点）。
   2. **在 `.env` 中显式设置 `ALLOWED_ORIGINS`** 为局域网设备浏览器实际访问的完整 UI origin（如 `ALLOWED_ORIGINS=http://192.168.1.49:4319`）。LAN 模式下服务端无法推断该 origin，未设置时其他设备的浏览器请求会被 403（`ORIGIN_NOT_ALLOWED`）拒绝；不要填 `*`（服务端直接拒绝），也不要试图绕过 Origin 检查。
   3. 用 `docker compose --profile lan up -d app-lan` 启动，并确认浏览器访问的地址与 `ALLOWED_ORIGINS` 完全一致（含端口）。
+
+### 登录与会话
+
+- 登录时可选会话时长：**12 小时 / 7 天 / 30 天 / 永久（10 年）**，到期后需要重新登录。
+- 登录态由 `pe_session` Cookie 携带（`HttpOnly` + `SameSite=Strict`，仅限同源），服务端只保存令牌的 SHA-256 摘要，原始令牌不落盘。
+- 修改用户名或密码（需输入当前密码）成功后，除当前会话外的全部会话立即失效；忘记密码时可删除 `auth.json` 后重启服务，将重新创建默认账号 `admin/admin`。
 
 ## 使用说明
 
@@ -114,13 +121,15 @@ docker compose up -d --build
 
 > QQ 音乐说明：QQ 公开接口对已下架/地区不可用曲目的标识暂未提供，工具会以占位与告警标注无法解析的条目。
 
-访问令牌只在你以非回环（LAN）模式运行服务时才需要；令牌只保存在浏览器内存中，不写入 localStorage，也不会进入 Service Worker 缓存，刷新页面后需要重新输入。
+访问服务端 API 前需先登录（默认账号 `admin/admin`，登录后请尽快修改）。登录态由 HttpOnly Cookie 保留，按登录时自选的时长过期，期间刷新页面无需重新输入任何内容。
 
 ## 安全与登录风险（请务必阅读）
 
 - **只读公开数据**：本工具仅请求网易云与 QQ 音乐的公开歌单元数据接口，不读取、不存储任何私人数据。
 - **本工具不需要任何平台账号或 Cookie**：正常使用全程无需登录网易云或 QQ 音乐。请不要在界面或配置中粘贴任何平台的 Cookie、登录态或私人令牌——本工具的任何环节都不会用到它们。
 - **服务默认只监听 `127.0.0.1`**：不暴露到网络。只有你显式修改 `HOST` / Docker 端口映射时，其它设备才可能访问。
+- **用户名密码登录**：账号以 scrypt（N=16384, r=8, p=1）加盐哈希保存在 `auth.json`，口令绝不落盘；用户名不存在与口令错误的校验耗时一致，无法通过时序差异枚举用户名。
+- **会话 Cookie 仅同源使用**：`pe_session` 为 `HttpOnly` + `SameSite=Strict`，脚本不可读、跨源请求不携带；服务端只存令牌的 SHA-256 摘要，过期会话在读取时惰性删除。
 - **日志脱敏**：服务端日志只记录请求 ID 与 HTTP 状态码；错误响应中的技术细节仅含请求 ID，不包含令牌、Cookie 或查询参数。
 - **Service Worker 只缓存同源静态资源**：界面外壳（HTML/JS/CSS/图标）可离线加载；`/api` 请求与任何带 `Authorization`/`Cookie` 头的请求一律不进入缓存。
 - **导出文件的隐私提示**：导出文件包含歌单名称、创建者与完整曲目列表等元数据，可能反映你的音乐偏好。分享前请自行确认内容。
@@ -132,7 +141,7 @@ docker compose up -d --build
 
 | HTTP / 错误码 | 含义 |
 |---|---|
-| 401 `AUTH_REQUIRED` | 需要有效的访问令牌 |
+| 401 `AUTH_REQUIRED` | 未登录或登录会话已过期，请先登录（登录接口凭据错误也返回该码） |
 | 403 `ORIGIN_NOT_ALLOWED` | 请求来源（Origin）不在白名单 |
 | 404 `JOB_NOT_FOUND` | 任务不存在或已过期 |
 | 409 `JOB_TERMINAL` / `JOB_NOT_READY` / `JOB_NOT_EXPORTABLE` | 任务已结束无法取消 / 尚未完成不能导出 / 任务结果不可导出 |
@@ -150,7 +159,7 @@ docker compose up -d --build
 | `pnpm --filter @playlist-exporter/web build` | 构建 Web 生产包（PWA 静态资源） |
 | `pnpm --filter @playlist-exporter/web e2e` | 运行 Playwright 端到端测试（自动构建并启动 vite preview，端口 4321） |
 
-CI 在 push 到 `main` 与所有 Pull Request 时运行：类型检查、测试与双端构建跑在 Node 22/24 × Linux/Windows/macOS 矩阵上，另有独立的 E2E job 与安全 job（gitleaks 密钥扫描、生产依赖审计）；Docker 镜像的多架构（amd64/arm64）构建由 `.github/workflows/docker.yml` 验证（仅构建不推送），同一 workflow 中的 smoke job 会构建 amd64 镜像并实际运行容器，执行 `scripts/docker-smoke.mjs` 的健康检查、令牌与 Origin 白名单、API 校验层矩阵（不含真实平台请求）。
+CI 在 push 到 `main` 与所有 Pull Request 时运行：类型检查、测试与双端构建跑在 Node 22/24 × Linux/Windows/macOS 矩阵上，另有独立的 E2E job 与安全 job（gitleaks 密钥扫描、生产依赖审计）；Docker 镜像的多架构（amd64/arm64）构建由 `.github/workflows/docker.yml` 验证（仅构建不推送），同一 workflow 中的 smoke job 会构建 amd64 镜像并实际运行容器，执行 `scripts/docker-smoke.mjs` 的健康检查、登录会话（默认账号 + Cookie）、Origin 白名单与 API 校验层矩阵（不含真实平台请求）。
 
 ## 许可与第三方
 

@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import type {
   HttpTransport,
   MusicProvider,
   Playlist,
 } from '@playlist-exporter/contracts';
 import { createServerApp } from '../src/app.js';
+import { createAuthStore } from '../src/auth.js';
 import type { ServerConfig } from '../src/config.js';
 import { createJobRegistry, type TimerHandle } from '../src/jobs.js';
 
@@ -12,12 +16,11 @@ import { createJobRegistry, type TimerHandle } from '../src/jobs.js';
 // genuine cross-origin path instead of the same-origin Vite proxy.
 const serverOrigin = 'http://127.0.0.1:4319';
 const uiOrigin = 'http://127.0.0.1:5219';
-const accessToken = 'local-export-token';
 
 const config = (overrides: Partial<ServerConfig> = {}): ServerConfig => ({
   host: '127.0.0.1',
   port: 4319,
-  accessToken,
+  dataDir: '/data',
   allowedOrigins: [serverOrigin, uiOrigin],
   maxBodyBytes: 1_048_576,
   maxConcurrentJobs: 2,
@@ -84,6 +87,11 @@ const fakeClock = (start: number) => {
   return { clock, setTimer, clearTimer };
 };
 
+const authDirs: string[] = [];
+afterAll(() => {
+  for (const dir of authDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 const createFixture = (
   options: { jobTtlMs?: number; clock?: ReturnType<typeof fakeClock> } = {},
 ): { app: ReturnType<typeof createServerApp>; jobs: ReturnType<typeof createJobRegistry> } => {
@@ -103,38 +111,61 @@ const createFixture = (
       clearTimer: injectedClock.clearTimer,
     }),
   });
+  // 会话时长固定为 forever 并挂到同一假时钟上，保证在任务 TTL 边界来回推进时
+  // 会话本身始终有效，从而只考察任务过期的语义。
+  const authDir = mkdtempSync(join(tmpdir(), 'playlist-exporter-cors-auth-'));
+  authDirs.push(authDir);
+  const auth = createAuthStore({
+    dataDir: authDir,
+    ...(injectedClock === undefined ? {} : { now: () => injectedClock.clock.now }),
+  });
   const app = createServerApp({
     config: selectedConfig,
     providers: new Map([['netease', provider()]]),
     http: noNetwork,
     jobs,
+    auth,
     requestIdFactory: () => 'request-1',
   });
   return { app, jobs };
 };
 
-const authorizedHeaders = (origin: string): Record<string, string> => ({
+const cookieHeaders = (cookie: string, origin: string): Record<string, string> => ({
   'content-type': 'application/json',
   origin,
-  authorization: `Bearer ${accessToken}`,
+  cookie,
 });
 
 const exportJob = async (
   app: ReturnType<typeof createServerApp>,
+  cookie: string,
   origin: string,
 ): Promise<Response> => app.request('/api/exports', {
   method: 'POST',
-  headers: authorizedHeaders(origin),
+  headers: cookieHeaders(cookie, origin),
   body: JSON.stringify({ jobId: 'job-1', options: { format: 'txt' } }),
 });
 
+const loginCookie = async (
+  app: ReturnType<typeof createServerApp>,
+): Promise<string> => {
+  const response = await app.request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: serverOrigin },
+    body: JSON.stringify({ username: 'admin', password: 'admin', duration: 'forever' }),
+  });
+  expect(response.status).toBe(200);
+  return response.headers.get('set-cookie')!.split(';', 1)[0];
+};
+
 const inspectToCompletion = async (
   app: ReturnType<typeof createServerApp>,
+  cookie: string,
   origin: string,
 ): Promise<void> => {
   const accepted = await app.request('/api/playlists/inspect', {
     method: 'POST',
-    headers: authorizedHeaders(origin),
+    headers: cookieHeaders(cookie, origin),
     body: JSON.stringify({ provider: 'netease', input: { value: '42' } }),
   });
   expect(accepted.status).toBe(202);
@@ -145,7 +176,8 @@ const inspectToCompletion = async (
 describe('export response CORS contract', () => {
   it('exposes content-disposition with the validated origin on cross-origin exports', async () => {
     const { app, jobs } = createFixture();
-    await inspectToCompletion(app, uiOrigin);
+    const cookie = await loginCookie(app);
+    await inspectToCompletion(app, cookie, uiOrigin);
 
     const preflight = await app.request('/api/playlists/inspect', {
       method: 'OPTIONS',
@@ -157,10 +189,11 @@ describe('export response CORS contract', () => {
     });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get('access-control-allow-origin')).toBe(uiOrigin);
+    // 同源部署 + SameSite=Strict 会话 Cookie：绝不允许跨源凭据访问。
     expect(preflight.headers.get('access-control-allow-credentials')).toBeNull();
     expect(preflight.headers.get('vary')).toContain('Origin');
 
-    const exported = await exportJob(app, uiOrigin);
+    const exported = await exportJob(app, cookie, uiOrigin);
     expect(exported.status).toBe(200);
     // The actual response must agree with the preflight and repeat the exact
     // validated origin, never a wildcard.
@@ -178,10 +211,11 @@ describe('export response CORS contract', () => {
 
   it('keeps same-origin exports working with identical bytes', async () => {
     const { app, jobs } = createFixture();
-    await inspectToCompletion(app, serverOrigin);
+    const cookie = await loginCookie(app);
+    await inspectToCompletion(app, cookie, serverOrigin);
     const exported = await app.request('/api/exports', {
       method: 'POST',
-      headers: authorizedHeaders(serverOrigin),
+      headers: cookieHeaders(cookie, serverOrigin),
       body: JSON.stringify({
         jobId: 'job-1',
         options: { format: 'txt', date: '2026-09-04', generatedAt: '2026-09-04T00:00:00.000Z' },
@@ -196,16 +230,17 @@ describe('export response CORS contract', () => {
     jobs.close();
   });
 
-  it('never returns an export response for foreign origins or invalid tokens', async () => {
+  it('never returns an export response for foreign origins or missing sessions', async () => {
     const { app, jobs } = createFixture();
-    await inspectToCompletion(app, uiOrigin);
+    const cookie = await loginCookie(app);
+    await inspectToCompletion(app, cookie, uiOrigin);
 
     const foreign = await app.request('/api/exports', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         origin: 'https://evil.example',
-        authorization: `Bearer ${accessToken}`,
+        cookie,
       },
       body: JSON.stringify({ jobId: 'job-1', options: { format: 'txt' } }),
     });
@@ -219,20 +254,16 @@ describe('export response CORS contract', () => {
       body: JSON.stringify({ jobId: 'job-1', options: { format: 'txt' } }),
     });
     expect(unauthorized.status).toBe(401);
+    expect(await unauthorized.json()).toMatchObject({ code: 'AUTH_REQUIRED', message: '请先登录' });
     expect(unauthorized.headers.get('access-control-expose-headers')).toBeNull();
-    expect(JSON.stringify(await unauthorized.json())).not.toContain(accessToken);
 
-    const wrong = await app.request('/api/exports', {
+    const expiredToken = await app.request('/api/exports', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        origin: uiOrigin,
-        authorization: 'Bearer wrong-token',
-      },
+      headers: cookieHeaders('pe_session=' + 'f'.repeat(64), uiOrigin),
       body: JSON.stringify({ jobId: 'job-1', options: { format: 'txt' } }),
     });
-    expect(wrong.status).toBe(401);
-    expect(wrong.headers.get('access-control-expose-headers')).toBeNull();
+    expect(expiredToken.status).toBe(401);
+    expect(expiredToken.headers.get('access-control-expose-headers')).toBeNull();
     jobs.close();
   });
 });
@@ -241,17 +272,18 @@ describe('export across the job ttl boundary', () => {
   it('serves the first export before the boundary and none after it', async () => {
     const clock = fakeClock(1_000);
     const { app, jobs } = createFixture({ jobTtlMs: 500, clock });
-    await inspectToCompletion(app, uiOrigin);
+    const cookie = await loginCookie(app);
+    await inspectToCompletion(app, cookie, uiOrigin);
 
     clock.clock.now = 1_200;
-    const first = await exportJob(app, uiOrigin);
+    const first = await exportJob(app, cookie, uiOrigin);
     expect(first.status).toBe(200);
     expect(first.headers.get('content-disposition')).toContain("filename*=UTF-8''");
     expect(first.headers.get('access-control-expose-headers')).toBe('Content-Disposition');
 
     clock.clock.now = 1_499;
     const inspected = await app.request('/api/jobs/job-1', {
-      headers: { origin: uiOrigin, authorization: `Bearer ${accessToken}` },
+      headers: { origin: uiOrigin, cookie },
     });
     expect(inspected.status).toBe(200);
     expect(await inspected.json()).toMatchObject({ jobId: 'job-1', status: 'completed' });
@@ -259,14 +291,14 @@ describe('export across the job ttl boundary', () => {
     // At the boundary the job is gone: the second export must not produce a
     // file and reports the job as not found.
     clock.clock.now = 1_500;
-    const second = await exportJob(app, uiOrigin);
+    const second = await exportJob(app, cookie, uiOrigin);
     expect(second.status).toBe(404);
     expect(await second.json()).toMatchObject({ code: 'JOB_NOT_FOUND' });
     expect(second.headers.get('content-disposition')).toBeNull();
     expect(second.headers.get('access-control-expose-headers')).toBeNull();
 
     clock.clock.now = 1_501;
-    const third = await exportJob(app, uiOrigin);
+    const third = await exportJob(app, cookie, uiOrigin);
     expect(third.status).toBe(404);
     expect(await third.json()).toMatchObject({ code: 'JOB_NOT_FOUND' });
     jobs.close();

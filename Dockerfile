@@ -58,7 +58,8 @@ COPY --from=build /app/apps/web/dist /app/web/dist
 RUN chmod -R a+rX /app
 
 # HOST 故意不设置：镜像单独运行时保持默认 127.0.0.1（loopback，最安全）；
-# docker-compose 部署通过 environment 显式覆盖 HOST=0.0.0.0（届时 ACCESS_TOKEN 必填）。
+# docker-compose 部署通过 environment 显式覆盖 HOST=0.0.0.0(认证由账号密码
+# 会话体系管理,与监听地址无关)。
 # HOME 指向 tmpfs 挂载点，兼容 read_only 根文件系统。
 ENV NODE_ENV=production \
     PORT=4319 \

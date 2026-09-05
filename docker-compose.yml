@@ -1,16 +1,19 @@
 # 跨平台流媒体歌单导出工具 — Docker Compose（NAS/本机自托管）
 #
 # 快速开始：
-#   1. cp .env.example .env，并在 .env 中设置强随机 ACCESS_TOKEN（必填）
-#      生成命令：node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+#   1. cp .env.example .env（按需修改端口；无需配置任何令牌）
 #   2. docker compose up -d --build     # 默认仅绑定宿主机 127.0.0.1:4319
-#   3. 浏览器访问 http://127.0.0.1:4319/（PWA），API 调用需带 Authorization: Bearer <ACCESS_TOKEN>
+#   3. 浏览器访问 http://127.0.0.1:4319/（PWA），使用默认账号 admin/admin 登录，
+#      登录后请立即在界面中修改用户名与密码
 #
 # 安全模型：
+#   - 认证为用户名密码登录：账号存于数据卷 /data/auth.json（scrypt 加盐哈希，不存明文），
+#     会话存于 /data/sessions.json（重启后登录态保留）。首次启动自动创建默认账号
+#     admin/admin，并在启动日志中提示"已创建默认账号 admin/admin，请尽快修改"。
+#   - 登录时自选会话时长（12 小时 / 7 天 / 30 天 / 永久）；会话 Cookie 为
+#     HttpOnly + SameSite=Strict，仅限同源使用。
 #   - 容器内 HOST=0.0.0.0 是刻意设计：容器网络命名空间隔离本身就是边界，
 #     宿主机回环由端口映射 "127.0.0.1:4319:4319" 保证（外部/局域网无法访问）。
-#   - 因此 compose 下服务端必然是非 loopback 监听，按既定安全不变量
-#     ACCESS_TOKEN 必填：缺失或为空时 compose 会直接报错拒绝启动。
 #   - ALLOWED_ORIGINS 显式传入：HOST=0.0.0.0 时服务端不会推导任何默认白名单
 #     （默认为空、拒绝所有跨源 POST），因此必须显式声明浏览器实际使用的 origin。
 #     默认服务（app）由 compose 按宿主映射端口自动传入 127.0.0.1 / localhost 两个
@@ -27,8 +30,8 @@ x-app-common: &app-common
     PORT: 4319
     # PWA 静态资源由 Node 服务端托管。
     WEB_DIST: /app/web/dist
-    # 从 .env 读取；未设置/为空时直接报错（安全不变量）。
-    ACCESS_TOKEN: ${ACCESS_TOKEN:?请在 .env 中设置 ACCESS_TOKEN}
+    # 认证（用户名/密码与会话）完全由服务端管理，持久化在数据卷 /data 下，
+    # 不需要任何环境变量令牌。旧版 ACCESS_TOKEN 若仍残留在 .env 中会被忽略。
     # 与默认服务宿主映射端口（127.0.0.1:${PORT:-4319}:4319）保持一致：
     # 浏览器从 http://127.0.0.1:<PORT> 或 http://localhost:<PORT> 访问 UI 时，
     # 其 Origin 才能通过服务端白名单（逗号分隔、精确匹配、必须带端口的完整 origin）。
@@ -37,7 +40,8 @@ x-app-common: &app-common
   tmpfs:
     - /tmp:size=16m,mode=1777
   volumes:
-    # 数据目录（导出文件等）。容器内以 UID 10001 写入，宿主机目录请保证可写。
+    # 数据目录（账号 auth.json、会话 sessions.json 等唯一持久化位置）。
+    # 容器内以 UID 10001 写入，宿主机目录请保证可写，并定期备份 auth.json。
     - ${DATA_DIR:-./data}:/data
   cap_drop:
     - ALL
@@ -63,7 +67,7 @@ services:
   # ⚠️ LAN 模式警告 ⚠️
   # app-lan 把端口绑定到宿主机所有网卡（0.0.0.0），局域网内任何设备都能访问本服务。
   # 仅当你完全理解暴露风险时才启用，且必须：
-  #   1. 使用强 ACCESS_TOKEN（≥32 字节随机值）；
+  #   1. 启动后立即登录并修改默认账号 admin/admin 的用户名与密码（存于 /data/auth.json）；
   #   2. 在 .env 中显式设置 ALLOWED_ORIGINS 为局域网设备浏览器实际访问的完整
   #      UI origin（协议+主机+端口，多个用英文逗号分隔），例如：
   #        ALLOWED_ORIGINS=http://192.168.1.49:4319

@@ -91,7 +91,7 @@ jobs:
       # 配置内容（真实令牌绝不进入日志）。与任务单第 3 节的 docker compose config 对应。
       - name: Validate compose interpolation (synthetic values, quiet)
         run: |
-          ACCESS_TOKEN=ci-synthetic-token-0123456789abcdef docker compose config --quiet
+          docker compose config --quiet
           echo "docker compose config: OK"
 
       - name: Setup Node 24 (for scripts/docker-smoke.mjs)

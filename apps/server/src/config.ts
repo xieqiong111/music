@@ -1,9 +1,16 @@
+import { posix as pathPosix } from 'node:path';
 import { isIP } from 'node:net';
 
 export interface ServerConfig {
   readonly host: string;
   readonly port: number;
-  readonly accessToken: string | undefined;
+  /**
+   * 持久化数据目录（容器内为卷挂载点）：账号 auth.json 与会话 sessions.json
+   * 位于其下。默认 /data，可由 DATA_DIR 注入（本地裸跑建议显式设置）。
+   */
+  readonly dataDir: string;
+  /** 本地音乐库索引文件，位于 dataDir 下（跟随卷持久化）。 */
+  readonly localLibraryDataFile: string;
   readonly appleDeveloperToken: string | undefined;
   readonly allowedOrigins: readonly string[];
   readonly maxBodyBytes: number;
@@ -52,11 +59,10 @@ const validateHost = (raw: string | undefined): string => {
   return host;
 };
 
-const validateToken = (raw: string | undefined): string | undefined => {
-  if (raw === undefined) return undefined;
-  if (raw === '' || raw.trim() === '' || /[\u0000-\u001f\u007f]/u.test(raw) ||
-      Buffer.byteLength(raw, 'utf8') > 4096) {
-    throw configError('ACCESS_TOKEN', '格式无效');
+const validateDataDir = (raw: string | undefined): string => {
+  if (raw === undefined || raw.trim() === '') return '/data';
+  if (/[\u0000-\u001f\u007f]/u.test(raw)) {
+    throw configError('DATA_DIR', '格式无效');
   }
   return raw;
 };
@@ -117,17 +123,22 @@ const parseOrigins = (raw: string | undefined, host: string, port: number): stri
   return [...new Set(candidates.map(parseOrigin))];
 };
 
-export const loadServerConfig = (env: Environment = process.env): ServerConfig => {
+export const loadServerConfig = (
+  env: Environment = process.env,
+  warn: (message: string) => void = () => undefined,
+): ServerConfig => {
   const host = validateHost(env.HOST);
   const port = parseInteger(env, 'PORT', 4319, 65_535);
-  const accessToken = validateToken(env.ACCESS_TOKEN);
-  if (!isLoopbackHost(host) && accessToken === undefined) {
-    throw configError('ACCESS_TOKEN', '在非 loopback 监听时必须配置');
+  // 鉴权已改为用户名密码登录（/data/auth.json）：ACCESS_TOKEN 彻底废弃。
+  // 环境里若仍残留该变量则直接忽略，只给出一条迁移警告，保证旧部署平滑升级。
+  if (env.ACCESS_TOKEN !== undefined && env.ACCESS_TOKEN !== '') {
+    warn('检测到已废弃的 ACCESS_TOKEN，已忽略');
   }
   return {
     host,
     port,
-    accessToken,
+    dataDir: validateDataDir(env.DATA_DIR),
+    localLibraryDataFile: pathPosix.join(validateDataDir(env.DATA_DIR), 'local-library.json'),
     appleDeveloperToken: validateAppleDeveloperToken(env.APPLE_DEVELOPER_TOKEN),
     allowedOrigins: parseOrigins(env.ALLOWED_ORIGINS, host, port),
     maxBodyBytes: parseInteger(env, 'MAX_BODY_BYTES', 1_048_576, 1_048_576),

@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { serve, type ServerType } from '@hono/node-server';
 import { createRestrictedFetch, startServer } from '../src/index.js';
 
@@ -11,6 +14,30 @@ const PLAYLIST_INPUT = 'https://music.apple.com/us/playlist/synth/pl.u-synth01';
 const stubServe = (() => ({ once: () => undefined })) as unknown as typeof serve;
 
 const ORIGIN = 'http://127.0.0.1:4319';
+
+// 认证存储指向临时目录，避免测试触碰真实的 /data。
+const dataDirs: string[] = [];
+afterAll(() => {
+  for (const dir of dataDirs) rmSync(dir, { recursive: true, force: true });
+});
+const tempDataDir = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'playlist-exporter-apple-data-'));
+  dataDirs.push(dir);
+  return dir;
+};
+
+// 默认账号 admin/admin 在 startServer 时自动创建；登录换回会话 Cookie。
+const loginCookie = async (
+  app: { request: (path: string, init?: RequestInit) => Promise<Response> },
+): Promise<string> => {
+  const response = await app.request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: ORIGIN },
+    body: JSON.stringify({ username: 'admin', password: 'admin', duration: '12h' }),
+  });
+  expect(response.status).toBe(200);
+  return response.headers.get('set-cookie')!.split(';', 1)[0];
+};
 
 const jsonHeaders = (extra: Record<string, string> = {}): Record<string, string> => ({
   'content-type': 'application/json',
@@ -57,7 +84,7 @@ describe('apple-music provider wiring (Preview)', () => {
   it('registers apple-music only when APPLE_DEVELOPER_TOKEN is configured', () => {
     const serveStub = vi.fn(() => ({ once: () => undefined }) as unknown as ServerType);
     const withToken = startServer({
-      env: { APPLE_DEVELOPER_TOKEN: APPLE_TOKEN },
+      env: { APPLE_DEVELOPER_TOKEN: APPLE_TOKEN, DATA_DIR: tempDataDir() },
       fetchImpl: (async () => new Response('{}')) as typeof fetch,
       serveImpl: serveStub,
       logger: () => undefined,
@@ -67,7 +94,7 @@ describe('apple-music provider wiring (Preview)', () => {
     withToken.jobs.close();
 
     const withoutToken = startServer({
-      env: {},
+      env: { DATA_DIR: tempDataDir() },
       fetchImpl: (async () => new Response('{}')) as typeof fetch,
       serveImpl: serveStub,
       logger: () => undefined,
@@ -81,7 +108,7 @@ describe('apple-music provider wiring (Preview)', () => {
     const seenAuthHeaders: string[] = [];
     const seenUrls: string[] = [];
     const runtime = startServer({
-      env: { APPLE_DEVELOPER_TOKEN: APPLE_TOKEN },
+      env: { APPLE_DEVELOPER_TOKEN: APPLE_TOKEN, DATA_DIR: tempDataDir() },
       fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input);
         seenUrls.push(url);
@@ -94,10 +121,11 @@ describe('apple-music provider wiring (Preview)', () => {
       serveImpl: stubServe,
       logger: () => undefined,
     });
+    const cookie = await loginCookie(runtime.app);
 
     const accepted = await runtime.app.request('/api/playlists/inspect', {
       method: 'POST',
-      headers: jsonHeaders(),
+      headers: jsonHeaders({ cookie }),
       body: JSON.stringify({ provider: 'apple-music', input: { value: PLAYLIST_INPUT } }),
     });
     expect(accepted.status).toBe(202);
@@ -127,14 +155,15 @@ describe('apple-music provider wiring (Preview)', () => {
   it('keeps apple-music unsupported (422) without a configured token', async () => {
     const upstream = vi.fn(async () => new Response('{}', { status: 200 }));
     const runtime = startServer({
-      env: {},
+      env: { DATA_DIR: tempDataDir() },
       fetchImpl: upstream as unknown as typeof fetch,
       serveImpl: stubServe,
       logger: () => undefined,
     });
+    const cookie = await loginCookie(runtime.app);
     const response = await runtime.app.request('/api/playlists/inspect', {
       method: 'POST',
-      headers: jsonHeaders(),
+      headers: jsonHeaders({ cookie }),
       body: JSON.stringify({ provider: 'apple-music', input: { value: PLAYLIST_INPUT } }),
     });
     expect(response.status).toBe(422);
@@ -146,7 +175,7 @@ describe('apple-music provider wiring (Preview)', () => {
   it('fails an apple-music job with AUTH_REQUIRED on a rejected token and leaks nothing', async () => {
     const logs: string[] = [];
     const runtime = startServer({
-      env: { APPLE_DEVELOPER_TOKEN: APPLE_TOKEN },
+      env: { APPLE_DEVELOPER_TOKEN: APPLE_TOKEN, DATA_DIR: tempDataDir() },
       fetchImpl: (async () => new Response(
         JSON.stringify({ errorMessage: 'must-not-escape' }),
         { status: 401, headers: { 'content-type': 'application/json' } },
@@ -154,9 +183,10 @@ describe('apple-music provider wiring (Preview)', () => {
       serveImpl: stubServe,
       logger: event => logs.push(JSON.stringify(event)),
     });
+    const cookie = await loginCookie(runtime.app);
     const accepted = await runtime.app.request('/api/playlists/inspect', {
       method: 'POST',
-      headers: jsonHeaders(),
+      headers: jsonHeaders({ cookie }),
       body: JSON.stringify({ provider: 'apple-music', input: { value: PLAYLIST_INPUT } }),
     });
     expect(accepted.status).toBe(202);
