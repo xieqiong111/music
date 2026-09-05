@@ -1,274 +1,152 @@
-import { useMemo, useRef, useState } from 'react';
-import { AppError } from '@playlist-exporter/contracts';
-import type { Playlist, ProviderId } from '@playlist-exporter/contracts';
-import { exportPlaylist, type ExportOptions } from '@playlist-exporter/exporters';
-import { importPlaylistFile } from '@playlist-exporter/importers';
-import {
-  ApiError,
-  HttpPlaylistService,
-  type JobError,
-  type JobSnapshot,
-  type JobStatus,
-  type PlaylistService,
-} from './api.js';
-import { ErrorDetails } from './components/ErrorDetails.js';
-import { ExportOptionsPanel } from './components/ExportOptions.js';
-import { ImportPanel } from './components/ImportPanel.js';
-import { PlaylistInput, detectProvider } from './components/PlaylistInput.js';
-import { PreviewTable } from './components/PreviewTable.js';
-import { ProgressPanel } from './components/ProgressPanel.js';
-import { ProviderCards } from './components/ProviderCards.js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { HttpPlaylistService, type PlaylistService, type SessionDuration } from './api.js';
+import { ExportWorkspace } from './components/ExportWorkspace.js';
+import { LocalLibraryView } from './components/LocalLibraryView.js';
+import { LoginView } from './components/LoginView.js';
+import { UserMenu } from './components/UserMenu.js';
 import { zhCN } from './i18n/zh-CN.js';
 
-const DEFAULT_OPTIONS: ExportOptions = {
-  format: 'txt',
-  includeIndex: false,
-  order: 'title-artist',
-  dedupe: false,
-  includeAlbum: false,
-  lineEnding: 'lf',
-  csvBom: false,
-};
-
-// Providers wired end-to-end in this build; mirrors the server's provider
-// registry (netease + qq-music). Anything outside this set stays submit-locked.
-const SUPPORTED_PROVIDERS: ReadonlySet<ProviderId> = new Set<ProviderId>(['netease', 'qq-music']);
-
-const sleep = (delayMs: number): Promise<void> =>
-  new Promise(resolve => setTimeout(resolve, delayMs));
-
-const fallbackError = (message: string = zhCN.failedFallback): JobError => ({
-  code: 'TASK_FAILED',
-  message,
-});
-
-const errorFrom = (error: unknown): JobError => {
-  if (error instanceof ApiError) {
-    return {
-      code: error.code,
-      message: error.message,
-      ...(error.technicalDetails === undefined
-        ? {}
-        : { technicalDetails: error.technicalDetails }),
-    };
-  }
-  if (error instanceof AppError) {
-    return {
-      code: error.code,
-      message: error.message,
-      ...(error.technicalDetails === undefined
-        ? {}
-        : { technicalDetails: error.technicalDetails }),
-    };
-  }
-  return fallbackError();
-};
-
-const download = (filename: string, mimeType: string, bytes: Uint8Array): void => {
-  if (typeof URL.createObjectURL !== 'function') return;
-  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const url = URL.createObjectURL(new Blob([buffer], { type: mimeType }));
-  const anchor = document.createElement('a');
-  anchor.download = filename;
-  anchor.href = url;
-  anchor.click();
-  URL.revokeObjectURL(url);
-};
+type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
+type MainView = 'export' | 'library';
 
 export interface AppProps {
   readonly service?: PlaylistService;
   readonly pollIntervalMs?: number;
+  /** 本地音乐库扫描状态的轮询间隔；默认 1 秒（测试可调小）。 */
+  readonly libraryPollIntervalMs?: number;
 }
 
-export default function App({ service: injectedService, pollIntervalMs = 250 }: AppProps) {
-  const [provider, setProvider] = useState<ProviderId>('netease');
-  const [input, setInput] = useState('');
-  const [accessToken, setAccessToken] = useState('');
-  const [jobId, setJobId] = useState<string>();
-  const [status, setStatus] = useState<JobStatus>();
-  const [snapshot, setSnapshot] = useState<JobSnapshot>();
-  const [playlist, setPlaylist] = useState<Playlist>();
-  const [error, setError] = useState<JobError>();
-  const [options, setOptions] = useState<ExportOptions>(DEFAULT_OPTIONS);
-  const [exporting, setExporting] = useState(false);
-  // true when the previewed playlist came from a local file import; those
-  // exports are generated in the browser and never hit the server.
-  const [imported, setImported] = useState(false);
-  const generation = useRef(0);
-  const jobIdRef = useRef<string | undefined>(undefined);
+export default function App({
+  service: injectedService,
+  pollIntervalMs = 250,
+  libraryPollIntervalMs = 1000,
+}: AppProps) {
+  const [authState, setAuthState] = useState<AuthState>('checking');
+  const [username, setUsername] = useState<string>();
+  const [sessionNotice, setSessionNotice] = useState<string>();
+  const [view, setView] = useState<MainView>('export');
 
-  const service = useMemo(
+  const playlistService = useMemo(
     () => injectedService ?? new HttpPlaylistService({
       baseUrl: import.meta.env.VITE_API_BASE_URL,
-      ...(accessToken === '' ? {} : { accessToken }),
     }),
-    [accessToken, injectedService],
+    [injectedService],
   );
 
-  const detected = detectProvider(input);
-  const effectiveProvider = detected ?? provider;
-  const active = status === 'queued' || status === 'running';
-  const canSubmit = input.trim() !== '' && SUPPORTED_PROVIDERS.has(effectiveProvider) && !active;
-
-  const changeInput = (value: string): void => {
-    setInput(value);
-    const next = detectProvider(value);
-    if (next !== undefined) setProvider(next);
-  };
-
-  const inspect = async (): Promise<void> => {
-    if (input.trim() === '') {
-      setError(fallbackError(zhCN.emptyInput));
-      return;
-    }
-    if (!SUPPORTED_PROVIDERS.has(effectiveProvider)) {
-      setError(fallbackError(zhCN.unavailableProvider));
-      return;
-    }
-    const current = ++generation.current;
-    setError(undefined);
-    setPlaylist(undefined);
-    setSnapshot(undefined);
-    setImported(false);
-    jobIdRef.current = undefined;
-    setJobId(undefined);
-    setStatus('queued');
-    try {
-      const created = await service.createInspection(effectiveProvider, input.trim());
-      if (generation.current !== current) {
-        await service.cancelJob(created.jobId).catch(() => undefined);
-        return;
-      }
-      jobIdRef.current = created.jobId;
-      setJobId(created.jobId);
-      setStatus(created.status);
-      while (generation.current === current) {
-        const next = await service.getJob(created.jobId);
-        if (generation.current !== current) return;
-        setSnapshot(next);
-        setStatus(next.status);
-        if (next.status === 'completed') {
-          if (next.result === undefined) {
-            setError(fallbackError());
-          } else {
-            setPlaylist(next.result);
-            if (!next.result.complete) setError(fallbackError(zhCN.incompleteBlocked));
-          }
-          return;
+  // 应用加载先查会话状态。查询本身失败（服务不可达等）时放行进入主界面：
+  // 会话真正失效时任何 /api/* 调用都会返回 401 并回到登录视图。
+  useEffect(() => {
+    let cancelled = false;
+    playlistService.getAuthStatus()
+      .then(status => {
+        if (cancelled) return;
+        if (status.authenticated && status.username !== undefined) {
+          setUsername(status.username);
+          setAuthState('authenticated');
+        } else {
+          setAuthState('unauthenticated');
         }
-        if (next.status === 'failed') {
-          setError(next.error ?? fallbackError());
-          return;
-        }
-        if (next.status === 'cancelled') return;
-        await sleep(pollIntervalMs);
-      }
-    } catch (caught) {
-      if (generation.current === current) {
-        setStatus('failed');
-        setError(errorFrom(caught));
-      }
-    }
-  };
-
-  const cancel = async (): Promise<void> => {
-    generation.current += 1;
-    const activeJobId = jobIdRef.current;
-    setStatus('cancelled');
-    if (activeJobId === undefined) return;
-    try {
-      await service.cancelJob(activeJobId);
-    } catch (caught) {
-      setStatus('failed');
-      setError(errorFrom(caught));
-    }
-  };
-
-  const importFile = async (file: File): Promise<void> => {
-    const previousJob = active ? jobIdRef.current : undefined;
-    const current = ++generation.current;
-    setError(undefined);
-    setPlaylist(undefined);
-    setSnapshot(undefined);
-    setStatus(undefined);
-    setJobId(undefined);
-    jobIdRef.current = undefined;
-    if (previousJob !== undefined) {
-      void service.cancelJob(previousJob).catch(caught => {
-        if (generation.current === current &&
-            !(caught instanceof ApiError && caught.code === 'JOB_TERMINAL')) {
-          setError(errorFrom(caught));
-        }
+      })
+      .catch(() => {
+        if (!cancelled) setAuthState('authenticated');
       });
-    }
-    try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const parsed = await importPlaylistFile(bytes, { filename: file.name });
-      if (generation.current !== current) return;
-      setImported(true);
-      setPlaylist(parsed);
-    } catch (caught) {
-      if (generation.current !== current) return;
-      setError(errorFrom(caught));
-    }
-  };
+    return () => {
+      cancelled = true;
+    };
+  }, [playlistService]);
 
-  const exportFile = async (): Promise<void> => {
-    if (playlist?.complete !== true) return;
-    if (!imported && jobId === undefined) return;
-    setExporting(true);
-    setError(undefined);
+  const handleSessionExpired = useCallback((): void => {
+    setAuthState('unauthenticated');
+    setUsername(undefined);
+    setSessionNotice(zhCN.sessionExpired);
+    setView('export');
+  }, []);
+
+  const handleLogin = useCallback(async (
+    name: string,
+    password: string,
+    duration: SessionDuration,
+  ): Promise<void> => {
+    const result = await playlistService.login(name, password, duration);
+    setUsername(result.username);
+    setSessionNotice(undefined);
+    setAuthState('authenticated');
+  }, [playlistService]);
+
+  const handleLogout = useCallback(async (): Promise<void> => {
     try {
-      if (imported) {
-        const artifact = exportPlaylist(playlist, options);
-        download(artifact.filename, artifact.mimeType, artifact.bytes);
-      } else {
-        const artifact = await service.createExport(jobId as string, options);
-        download(artifact.filename, artifact.mimeType, artifact.bytes);
-      }
-    } catch (caught) {
-      setError(errorFrom(caught));
-    } finally {
-      setExporting(false);
+      await playlistService.logout();
+    } catch {
+      // 登出失败也回到登录视图：会话视作已结束。
     }
-  };
+    setUsername(undefined);
+    setSessionNotice(undefined);
+    setAuthState('unauthenticated');
+  }, [playlistService]);
+
+  if (authState === 'checking') {
+    return (
+      <main>
+        <p role="status">{zhCN.authChecking}</p>
+      </main>
+    );
+  }
+
+  if (authState === 'unauthenticated') {
+    return (
+      <main>
+        <LoginView notice={sessionNotice} onLogin={handleLogin} />
+      </main>
+    );
+  }
 
   return (
     <main>
-      <header className="hero">
-        <p className="hero__mark">PLAYLIST / TXT</p>
-        <h1>{zhCN.appTitle}</h1>
-        <p className="hero__subtitle">{zhCN.appSubtitle}</p>
-        <p className="privacy-note">{zhCN.privacyNote}</p>
-      </header>
-
-      <ProviderCards onSelect={setProvider} selected={provider} />
-      <PlaylistInput
-        accessToken={accessToken}
-        detected={detected}
-        disabled={!canSubmit}
-        onChange={changeInput}
-        onSubmit={() => void inspect()}
-        onTokenChange={setAccessToken}
-        value={input}
-      />
-      <ImportPanel onFile={file => void importFile(file)} />
-
-      {status !== undefined && (
-        <ProgressPanel
-          onCancel={() => void cancel()}
-          progress={snapshot?.progress}
-          status={status}
+      <div className="top-bar">
+        <nav aria-label={zhCN.viewSwitchLabel} className="view-tabs">
+          <button
+            aria-pressed={view === 'export'}
+            onClick={() => setView('export')}
+            type="button"
+          >
+            {zhCN.tabExport}
+          </button>
+          <button
+            aria-pressed={view === 'library'}
+            onClick={() => setView('library')}
+            type="button"
+          >
+            {zhCN.tabLibrary}
+          </button>
+        </nav>
+        <UserMenu
+          onCredentialsChanged={nextUsername => setUsername(nextUsername)}
+          onLogout={() => void handleLogout()}
+          onSessionExpired={handleSessionExpired}
+          service={playlistService}
+          username={username}
         />
-      )}
-      {error !== undefined && <ErrorDetails error={error} />}
-      {playlist !== undefined && <PreviewTable playlist={playlist} />}
-      {playlist?.complete === true && (
-        <ExportOptionsPanel
-          exporting={exporting}
-          onChange={setOptions}
-          onExport={() => void exportFile()}
-          options={options}
+      </div>
+
+      {view === 'export' ? (
+        <>
+          <header className="hero">
+            <p className="hero__mark">PLAYLIST / TXT</p>
+            <h1>{zhCN.appTitle}</h1>
+            <p className="hero__subtitle">{zhCN.appSubtitle}</p>
+            <p className="privacy-note">{zhCN.privacyNote}</p>
+          </header>
+          <ExportWorkspace
+            onSessionExpired={handleSessionExpired}
+            pollIntervalMs={pollIntervalMs}
+            service={playlistService}
+          />
+        </>
+      ) : (
+        <LocalLibraryView
+          onSessionExpired={handleSessionExpired}
+          pollIntervalMs={libraryPollIntervalMs}
+          service={playlistService}
         />
       )}
     </main>

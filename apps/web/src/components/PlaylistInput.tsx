@@ -22,9 +22,7 @@ export interface PlaylistInputProps {
   readonly value: string;
   readonly detected: ProviderId | undefined;
   readonly disabled: boolean;
-  readonly accessToken: string;
   readonly onChange: (value: string) => void;
-  readonly onTokenChange: (value: string) => void;
   readonly onSubmit: () => void;
 }
 
@@ -32,9 +30,7 @@ export function PlaylistInput({
   value,
   detected,
   disabled,
-  accessToken,
   onChange,
-  onTokenChange,
   onSubmit,
 }: PlaylistInputProps) {
   return (
@@ -58,18 +54,6 @@ export function PlaylistInput({
           {zhCN.inspectButton}
         </button>
       </div>
-      <details className="token-field">
-        <summary>{zhCN.tokenLabel}</summary>
-        <input
-          aria-label={zhCN.tokenLabel}
-          autoComplete="off"
-          onChange={event => onTokenChange(event.target.value)}
-          placeholder={zhCN.tokenPlaceholder}
-          type="password"
-          value={accessToken}
-        />
-        <small>{zhCN.tokenHint}</small>
-      </details>
       {value.trim() !== '' && <p className="detection-note">{detectionLabel(detected)}</p>}
     </section>
   );

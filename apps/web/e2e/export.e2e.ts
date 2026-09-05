@@ -15,7 +15,12 @@ const L = {
   previewTitle: '导出预览',
   exportButton: '导出文件',
   totalTracks: (count: number): string => `共 ${count} 首歌曲`,
+  loginUsername: '用户名',
+  loginPassword: '密码',
+  loginButton: '登录',
 };
+
+const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' } as const;
 
 const PLAYLIST_INPUT =
   'https://music.163.com/#/playlist?id=2064224062&userid=test';
@@ -118,6 +123,31 @@ const encodeFilename = (filename: string): string =>
     character => `%${character.codePointAt(0)?.toString(16).toUpperCase() ?? ''}`,
   );
 
+// 登录门 mock：会话已认证 + 空的本地音乐库（导出面板的“排除本地重复”依赖它）。
+// Playwright 路由按注册的逆序匹配，需要覆盖更早注册的 **/api/** 通配路由时，
+// 在其后再次注册本函数即可。
+async function mockAuthenticatedSession(page: Page): Promise<void> {
+  await page.route('**/api/auth/status', async route => {
+    await route.fulfill({
+      status: 200,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ authenticated: true, username: 'admin' }),
+    });
+  });
+  await page.route('**/api/local-library', async route => {
+    await route.fulfill({
+      status: 200,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        roots: [],
+        entries: [],
+        scan: { active: false, scannedFiles: 0 },
+        truncated: false,
+      }),
+    });
+  });
+}
+
 interface JobCapture {
   inspectBodies: Array<{ provider?: string; input?: { value?: string } }>;
   exportBodies: Array<{ jobId?: string; options?: { format?: string; lineEnding?: string } }>;
@@ -159,6 +189,8 @@ async function mockPlaylistApi(
   },
 ): Promise<void> {
   const { provider, jobId, playlist: mocked, filename, completeAfterPolls, capture } = options;
+
+  await mockAuthenticatedSession(page);
 
   await page.route('**/api/playlists/inspect', async route => {
     capture.inspectBodies.push(
@@ -437,12 +469,15 @@ test('导出 QQ 音乐 12 首歌单：链接识别、顺序、重复曲、UTF-8 
 });
 
 test('导入 Apple Music 导出文件：本机解析、预览、本机导出且不经过服务端', async ({ page }) => {
-  // 不注册任何 /api mock：导入路径必须完全不产生网络请求。
-  const exportRequests: string[] = [];
+  // 业务 API 一律中止：导入→导出路径必须完全不产生业务网络请求；
+  // 仅放行应用加载时的登录态查询（/api/auth/status，登录门必需）。
+  const abortedRequests: string[] = [];
   await page.route('**/api/**', async route => {
-    exportRequests.push(route.request().url());
+    abortedRequests.push(route.request().url());
     await route.abort();
   });
+  // 后注册的路由优先匹配，因此登录态查询不会被上面的通配路由中止。
+  await mockAuthenticatedSession(page);
 
   const tsv = [
     '名称\t艺术家\t专辑',
@@ -471,6 +506,55 @@ test('导入 Apple Music 导出文件：本机解析、预览、本机导出且�
   expect([...bytes.slice(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   expect(text).toBe('第1首 · 导入曲 ✨ - 歌手甲\n第2首 - 歌手乙、歌手丙\n');
-  // 本机导出路径不得触碰任何 API
-  expect(exportRequests).toEqual([]);
+  // 本机导出路径不得触碰任何业务 API
+  expect(abortedRequests).toEqual([]);
+});
+
+test('登录门：未认证显示登录视图，默认账号 admin/admin 登录成功后进入主界面', async ({ page }) => {
+  let authenticated = false;
+  const loginBodies: Array<{ username?: string; password?: string; duration?: string }> = [];
+  await page.route('**/api/auth/status', async route => {
+    await route.fulfill({
+      status: 200,
+      headers: JSON_HEADERS,
+      body: JSON.stringify(
+        authenticated
+          ? { authenticated: true, username: 'admin' }
+          : { authenticated: false },
+      ),
+    });
+  });
+  await page.route('**/api/auth/login', async route => {
+    loginBodies.push(
+      route.request().postDataJSON() as { username?: string; password?: string; duration?: string },
+    );
+    authenticated = true;
+    await route.fulfill({
+      status: 200,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        authenticated: true,
+        username: 'admin',
+        expiresAt: ISO_TIME,
+      }),
+    });
+  });
+
+  await page.goto('/');
+  // 未认证：只显示登录视图，主界面不可见
+  await expect(page.getByLabel(L.loginUsername)).toBeVisible();
+  await expect(page.getByLabel(L.loginPassword)).toBeVisible();
+  await expect(page.getByText(/admin \/ admin/)).toBeVisible();
+  await expect(page.getByRole('button', { name: L.inspectButton })).toHaveCount(0);
+
+  await page.getByLabel(L.loginUsername).fill('admin');
+  await page.getByLabel(L.loginPassword).fill('admin');
+  // 默认会话时长为 7 天
+  await expect(page.getByLabel('保持登录时长')).toHaveValue('7d');
+  await page.getByRole('button', { name: L.loginButton }).click();
+
+  expect(loginBodies).toEqual([{ username: 'admin', password: 'admin', duration: '7d' }]);
+  // 登录成功：进入主界面，右上角显示当前用户名
+  await expect(page.getByRole('button', { name: L.inspectButton })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'admin' })).toBeVisible();
 });

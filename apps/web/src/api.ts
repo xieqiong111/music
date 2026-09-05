@@ -9,6 +9,56 @@ import type { ExportOptions } from '@playlist-exporter/exporters';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+export type SessionDuration = '12h' | '7d' | '30d' | 'forever';
+
+export interface AuthStatus {
+  readonly authenticated: boolean;
+  readonly username?: string;
+}
+
+export interface LoginResult {
+  readonly username: string;
+  readonly expiresAt: string;
+}
+
+export interface CredentialsUpdate {
+  readonly currentPassword: string;
+  readonly username?: string;
+  readonly password?: string;
+}
+
+export interface LocalLibraryRoot {
+  readonly id: string;
+  readonly path: string;
+  readonly addedAt: string;
+  readonly lastScanAt?: string;
+  readonly fileCount?: number;
+}
+
+export interface LocalLibraryEntry {
+  readonly id: string;
+  readonly rootId: string;
+  readonly path: string;
+  readonly title: string;
+  readonly artists: ReadonlyArray<string>;
+  readonly album: string | null;
+  readonly durationMs: number | null;
+  readonly mtimeMs: number;
+}
+
+export interface LocalLibraryState {
+  readonly roots: ReadonlyArray<LocalLibraryRoot>;
+  readonly entries: ReadonlyArray<LocalLibraryEntry>;
+  readonly scan: { readonly active: boolean; readonly scannedFiles: number };
+  readonly truncated: boolean;
+}
+
+export interface LibraryEntryPatch {
+  readonly title?: string;
+  readonly artists?: ReadonlyArray<string>;
+  readonly album?: string | null;
+}
+
 export interface JobError {
   readonly code: string;
   readonly message: string;
@@ -31,7 +81,14 @@ export interface ExportDownload {
   readonly filename: string;
   readonly mimeType: string;
   readonly bytes: Uint8Array;
+  /** 仅当服务端响应带 x-excluded-local-count 时存在（本地去重管道实际执行）。 */
+  readonly excludedLocalCount?: number;
 }
+
+/** 导出选项：在 packages/exporters 的 ExportOptions 上追加服务端本地去重开关。 */
+export type AppExportOptions = ExportOptions & {
+  readonly excludeLocalDuplicates?: boolean;
+};
 
 export interface PlaylistService {
   createInspection(provider: ProviderId, input: string): Promise<{
@@ -40,7 +97,17 @@ export interface PlaylistService {
   }>;
   getJob(jobId: string): Promise<JobSnapshot>;
   cancelJob(jobId: string): Promise<void>;
-  createExport(jobId: string, options: ExportOptions): Promise<ExportDownload>;
+  createExport(jobId: string, options: AppExportOptions): Promise<ExportDownload>;
+  getAuthStatus(): Promise<AuthStatus>;
+  login(username: string, password: string, duration: SessionDuration): Promise<LoginResult>;
+  logout(): Promise<void>;
+  updateCredentials(update: CredentialsUpdate): Promise<{ readonly username: string }>;
+  getLocalLibrary(): Promise<LocalLibraryState>;
+  addLibraryRoot(path: string): Promise<LocalLibraryState>;
+  removeLibraryRoot(id: string): Promise<LocalLibraryState>;
+  rescanLibraryRoot(id: string): Promise<LocalLibraryState>;
+  editLibraryEntry(id: string, patch: LibraryEntryPatch): Promise<LocalLibraryEntry>;
+  removeLibraryEntry(id: string): Promise<LocalLibraryState>;
 }
 
 export class ApiError extends Error {
@@ -57,7 +124,6 @@ export class ApiError extends Error {
 
 export interface HttpPlaylistServiceOptions {
   readonly baseUrl?: string;
-  readonly accessToken?: string;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -126,6 +192,81 @@ const parseJobCreation = (raw: unknown): { readonly jobId: string; readonly stat
   return { jobId: raw.jobId, status: raw.status as JobStatus };
 };
 
+const parseAuthStatus = (raw: unknown): AuthStatus => {
+  if (!isRecord(raw) || typeof raw.authenticated !== 'boolean') throw invalidServerResponse();
+  if (raw.authenticated === false) return { authenticated: false };
+  if (typeof raw.username !== 'string' || raw.username === '') throw invalidServerResponse();
+  return { authenticated: true, username: raw.username };
+};
+
+const parseLoginResult = (raw: unknown): LoginResult => {
+  if (!isRecord(raw) || typeof raw.username !== 'string' || raw.username === '' ||
+      typeof raw.expiresAt !== 'string') {
+    throw invalidServerResponse();
+  }
+  return { username: raw.username, expiresAt: raw.expiresAt };
+};
+
+const parseCredentialsResult = (raw: unknown): { readonly username: string } => {
+  if (!isRecord(raw) || typeof raw.username !== 'string' || raw.username === '') {
+    throw invalidServerResponse();
+  }
+  return { username: raw.username };
+};
+
+const parseLibraryRoot = (raw: unknown): LocalLibraryRoot => {
+  if (!isRecord(raw) || typeof raw.id !== 'string' || typeof raw.path !== 'string' ||
+      typeof raw.addedAt !== 'string') {
+    throw invalidServerResponse();
+  }
+  return {
+    id: raw.id,
+    path: raw.path,
+    addedAt: raw.addedAt,
+    ...(typeof raw.lastScanAt === 'string' ? { lastScanAt: raw.lastScanAt } : {}),
+    ...(typeof raw.fileCount === 'number' && Number.isFinite(raw.fileCount)
+      ? { fileCount: raw.fileCount }
+      : {}),
+  };
+};
+
+const parseLibraryEntry = (raw: unknown): LocalLibraryEntry => {
+  if (!isRecord(raw) || typeof raw.id !== 'string' || typeof raw.rootId !== 'string' ||
+      typeof raw.path !== 'string' || typeof raw.title !== 'string' ||
+      !Array.isArray(raw.artists) || raw.artists.some(artist => typeof artist !== 'string') ||
+      !(raw.album === null || typeof raw.album === 'string') ||
+      !(raw.durationMs === null ||
+        (typeof raw.durationMs === 'number' && Number.isFinite(raw.durationMs))) ||
+      typeof raw.mtimeMs !== 'number' || !Number.isFinite(raw.mtimeMs)) {
+    throw invalidServerResponse();
+  }
+  return {
+    id: raw.id,
+    rootId: raw.rootId,
+    path: raw.path,
+    title: raw.title,
+    artists: [...raw.artists as ReadonlyArray<string>],
+    album: raw.album,
+    durationMs: raw.durationMs,
+    mtimeMs: raw.mtimeMs,
+  };
+};
+
+const parseLibraryState = (raw: unknown): LocalLibraryState => {
+  if (!isRecord(raw) || !Array.isArray(raw.roots) || !Array.isArray(raw.entries) ||
+      !isRecord(raw.scan) || typeof raw.scan.active !== 'boolean' ||
+      typeof raw.scan.scannedFiles !== 'number' || !Number.isFinite(raw.scan.scannedFiles) ||
+      typeof raw.truncated !== 'boolean') {
+    throw invalidServerResponse();
+  }
+  return {
+    roots: raw.roots.map(parseLibraryRoot),
+    entries: raw.entries.map(parseLibraryEntry),
+    scan: { active: raw.scan.active, scannedFiles: raw.scan.scannedFiles },
+    truncated: raw.truncated,
+  };
+};
+
 const parseJobSnapshot = (raw: unknown): JobSnapshot => {
   if (!isRecord(raw) || typeof raw.jobId !== 'string' ||
       !providerIdSchema.safeParse(raw.provider).success ||
@@ -185,29 +326,31 @@ const structuredError = async (response: Response): Promise<ApiError> => {
   return new ApiError({ code: 'HTTP_ERROR', message: '服务暂时不可用' });
 };
 
+const excludedLocalCountFrom = (header: string | null): number | undefined => {
+  if (header === null) return undefined;
+  const value = Number(header);
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
+};
+
 export class HttpPlaylistService implements PlaylistService {
   readonly #baseUrl: string;
-  readonly #accessToken: string | undefined;
   readonly #fetch: typeof fetch;
 
   constructor(options: HttpPlaylistServiceOptions = {}) {
     this.#baseUrl = normalizeApiBaseUrl(options.baseUrl);
-    this.#accessToken = options.accessToken;
     // fetch must keep the global receiver; a detached call throws
     // "Illegal invocation" in Chromium.
     this.#fetch = (options.fetchImpl ?? globalThis.fetch).bind(globalThis);
   }
 
   async #request(path: string, init: RequestInit = {}): Promise<Response> {
-    const headers = new Headers(init.headers);
-    if (this.#accessToken !== undefined) {
-      headers.set('authorization', `Bearer ${this.#accessToken}`);
-    }
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       ...init,
-      headers,
+      headers: new Headers(init.headers),
       cache: 'no-store',
-      credentials: 'omit',
+      // Session travels in a SameSite HttpOnly cookie set by the server; send
+      // it explicitly so the intent stays visible on every request.
+      credentials: 'same-origin',
     });
     if (!response.ok) throw await structuredError(response);
     return response;
@@ -236,16 +379,96 @@ export class HttpPlaylistService implements PlaylistService {
     await this.#request(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
   }
 
-  async createExport(jobId: string, options: ExportOptions): Promise<ExportDownload> {
+  async createExport(jobId: string, options: AppExportOptions): Promise<ExportDownload> {
     const response = await this.#request('/api/exports', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jobId, options }),
     });
+    const excludedLocalCount = excludedLocalCountFrom(
+      response.headers.get('x-excluded-local-count'),
+    );
     return {
       filename: safeFilename(response.headers.get('content-disposition')),
       mimeType: response.headers.get('content-type') ?? 'application/octet-stream',
       bytes: new Uint8Array(await response.arrayBuffer()),
+      ...(excludedLocalCount === undefined ? {} : { excludedLocalCount }),
     };
+  }
+
+  getAuthStatus(): Promise<AuthStatus> {
+    return this.#json<unknown>('/api/auth/status').then(parseAuthStatus);
+  }
+
+  login(username: string, password: string, duration: SessionDuration): Promise<LoginResult> {
+    return this.#json<unknown>('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password, duration }),
+    }).then(parseLoginResult);
+  }
+
+  async logout(): Promise<void> {
+    await this.#request('/api/auth/logout', { method: 'POST' });
+  }
+
+  async updateCredentials(update: CredentialsUpdate): Promise<{ readonly username: string }> {
+    const body: Record<string, string> = { currentPassword: update.currentPassword };
+    const username = update.username?.trim();
+    if (username !== undefined && username !== '') body.username = username;
+    if (update.password !== undefined && update.password !== '') body.password = update.password;
+    return parseCredentialsResult(await this.#json<unknown>('/api/auth/credentials', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+  }
+
+  getLocalLibrary(): Promise<LocalLibraryState> {
+    return this.#json<unknown>('/api/local-library').then(parseLibraryState);
+  }
+
+  addLibraryRoot(path: string): Promise<LocalLibraryState> {
+    return this.#json<unknown>('/api/local-library/roots', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }).then(parseLibraryState);
+  }
+
+  removeLibraryRoot(id: string): Promise<LocalLibraryState> {
+    return this.#json<unknown>(`/api/local-library/roots/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }).then(parseLibraryState);
+  }
+
+  rescanLibraryRoot(id: string): Promise<LocalLibraryState> {
+    return this.#json<unknown>(`/api/local-library/roots/${encodeURIComponent(id)}/rescan`, {
+      method: 'POST',
+    }).then(parseLibraryState);
+  }
+
+  async editLibraryEntry(
+    id: string,
+    patch: LibraryEntryPatch,
+  ): Promise<LocalLibraryEntry> {
+    const body: Record<string, unknown> = {};
+    if (patch.title !== undefined) body.title = patch.title;
+    if (patch.artists !== undefined) body.artists = [...patch.artists];
+    if (patch.album !== undefined) body.album = patch.album;
+    return parseLibraryEntry(await this.#json<unknown>(
+      `/api/local-library/entries/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    ));
+  }
+
+  removeLibraryEntry(id: string): Promise<LocalLibraryState> {
+    return this.#json<unknown>(`/api/local-library/entries/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }).then(parseLibraryState);
   }
 }
