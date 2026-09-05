@@ -14,10 +14,15 @@ import {
  *
  * This is a deliberately minimal strict subset parser: only
  * `<dict>/<key>/<string>/<integer>/<real>/<date>/<true>/<false>/<array>` are
- * understood, `data` values are skipped with an aggregated warning, and any
- * DOCTYPE declaration is rejected outright to rule out external-entity (XXE)
- * injection. Unknown or malformed constructs fail with structured errors
- * instead of being silently dropped.
+ * understood, `data` values are skipped with an aggregated warning, and
+ * DOCTYPE handling follows a strict allow-list: Apple's standard plist PUBLIC
+ * declaration in the document prolog is skipped verbatim (the DTD is never
+ * fetched and no external entity is resolved — this code path performs no
+ * network or filesystem I/O), while every other DOCTYPE form (internal
+ * subsets, custom entities, foreign identifiers, malformed declarations,
+ * duplicates, mid-document occurrences) is rejected to rule out
+ * external-entity (XXE) injection. Unknown or malformed constructs fail with
+ * structured errors instead of being silently dropped.
  */
 
 export interface AppleXmlImportOptions extends LocalFileHint {
@@ -44,6 +49,19 @@ const ELEMENT_NAME_RE = new RegExp(ELEMENT_NAME_SOURCE, 'uy');
 const ATTRIBUTE_NAME_RE = new RegExp(`${ELEMENT_NAME_SOURCE}`, 'uy');
 const INTEGER_RE = /^[+-]?\d+$/u;
 const REAL_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
+
+/**
+ * The single DOCTYPE declaration accepted by this parser, spelled out in
+ * full: `plist` root name, PUBLIC keyword, Apple's official FPI and system
+ * identifier, and no internal subset. Only this exact form is skipped in the
+ * document prolog; the DTD is never read, no external entity is resolved and
+ * no request of any kind is issued.
+ */
+const DOCTYPE_KEYWORD = '<!DOCTYPE';
+const PLIST_DOCTYPE_ROOT_NAME = 'plist';
+const PLIST_DOCTYPE_PUBLIC_KEYWORD = 'PUBLIC';
+const PLIST_OFFICIAL_PUBLIC_IDENTIFIER = '-//Apple//DTD PLIST 1.0//EN';
+const PLIST_OFFICIAL_SYSTEM_IDENTIFIER = 'http://www.apple.com/DTDs/PropertyList-1.0.dtd';
 
 /** Human-readable type name used in structured error details. */
 const describePlistValue = (value: PlistNode): string => {
@@ -119,7 +137,8 @@ class PlistScanner {
 
   /**
    * Skips inter-element trivia: whitespace, comments and processing
-   * instructions. A DOCTYPE (anywhere) and CDATA sections are rejected here.
+   * instructions. A DOCTYPE (outside the document prolog) and CDATA sections
+   * are rejected here.
    */
   public skipMisc(): void {
     for (;;) {
@@ -147,6 +166,121 @@ class PlistScanner {
     const end = this.text.indexOf('?>', this.pos + 2);
     if (end === -1) throw new PlistSyntaxError('处理指令未闭合', this.pos);
     this.pos = end + 2;
+  }
+
+  /**
+   * Skips document-prolog trivia (whitespace, comments, processing
+   * instructions) before the root element. Unlike {@link skipMisc}, exactly
+   * one standard Apple plist DOCTYPE declaration is tolerated here and
+   * skipped without reading the DTD or resolving any external entity. Any
+   * other `<!` node — including a second DOCTYPE — is rejected.
+   */
+  public skipProlog(): void {
+    let doctypeAccepted = false;
+    for (;;) {
+      this.skipWhitespace();
+      if (this.startsWith('<!--')) {
+        this.skipComment();
+        continue;
+      }
+      if (this.startsWith('<?')) {
+        this.skipProcessingInstruction();
+        continue;
+      }
+      if (this.startsWith('<!')) {
+        const head = this.text.slice(this.pos, this.pos + DOCTYPE_KEYWORD.length).toUpperCase();
+        if (head.startsWith(DOCTYPE_KEYWORD)) {
+          if (doctypeAccepted) {
+            this.rejectDoctype('检测到重复的 DOCTYPE 声明，为防范外部实体注入（XXE）已拒绝解析该文件');
+          }
+          this.skipStandardPlistDoctype();
+          doctypeAccepted = true;
+          continue;
+        }
+        this.rejectBangNode();
+      }
+      return;
+    }
+  }
+
+  private rejectDoctype(message: string): never {
+    throw new AppError({
+      code: 'IMPORT_XML_DOCTYPE_FORBIDDEN',
+      message,
+      technicalDetails: this.locationOf(this.pos),
+    });
+  }
+
+  /**
+   * Consumes the standard Apple plist DOCTYPE declaration:
+   * `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+   * "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`.
+   * The quoted identifiers must match the official values exactly, no
+   * internal subset `[…]` is tolerated, and nothing beyond the declaration is
+   * interpreted. Any deviation throws IMPORT_XML_DOCTYPE_FORBIDDEN.
+   */
+  private skipStandardPlistDoctype(): void {
+    // 注解必须落在变量本身（而非仅箭头函数上），TypeScript 才会把调用视为
+    // never-returning，从而在 `if (x === null) fail(...)` 之后正确收窄类型。
+    const fail: (message: string) => never = (message) => this.rejectDoctype(message);
+    if (!this.startsWith(DOCTYPE_KEYWORD)) {
+      fail('DOCTYPE 声明关键字必须为大写 "DOCTYPE"，已拒绝解析该文件');
+    }
+    this.pos += DOCTYPE_KEYWORD.length;
+    this.expectDoctypeWhitespace(fail);
+    ELEMENT_NAME_RE.lastIndex = this.pos;
+    const name = ELEMENT_NAME_RE.exec(this.text);
+    if (name === null) fail('DOCTYPE 声明缺少合法的根元素名称，已拒绝解析该文件');
+    if (name[0] !== PLIST_DOCTYPE_ROOT_NAME) {
+      fail(`DOCTYPE 声明的根元素名称必须是 plist，实际为「${name[0]}」，已拒绝解析该文件`);
+    }
+    this.pos += name[0].length;
+    this.expectDoctypeWhitespace(fail);
+    if (!this.startsWith(PLIST_DOCTYPE_PUBLIC_KEYWORD)) {
+      fail('DOCTYPE 声明必须是指向 Apple 官方 plist DTD 的 PUBLIC 声明，已拒绝解析该文件');
+    }
+    this.pos += PLIST_DOCTYPE_PUBLIC_KEYWORD.length;
+    this.expectDoctypeWhitespace(fail);
+    const publicId = this.readDoctypeQuotedLiteral(fail);
+    if (publicId !== PLIST_OFFICIAL_PUBLIC_IDENTIFIER) {
+      fail(
+        `DOCTYPE 声明的公共标识符不是 Apple 官方 plist DTD（${PLIST_OFFICIAL_PUBLIC_IDENTIFIER}），已拒绝解析该文件`,
+      );
+    }
+    this.expectDoctypeWhitespace(fail);
+    const systemId = this.readDoctypeQuotedLiteral(fail);
+    if (systemId !== PLIST_OFFICIAL_SYSTEM_IDENTIFIER) {
+      fail(
+        `DOCTYPE 声明的系统标识符不是 Apple 官方 plist DTD 地址（${PLIST_OFFICIAL_SYSTEM_IDENTIFIER}），已拒绝解析该文件`,
+      );
+    }
+    this.skipWhitespace();
+    if (this.startsWith('[')) {
+      fail('DOCTYPE 声明包含内部子集（可能定义自定义实体），已拒绝解析该文件');
+    }
+    if (this.char() !== '>') {
+      fail('DOCTYPE 声明在官方 DTD 标识符之后包含无法识别的内容，已拒绝解析该文件');
+    }
+    this.pos += 1;
+  }
+
+  private expectDoctypeWhitespace(fail: (message: string) => never): void {
+    if (!isXmlWhitespace(this.char())) {
+      fail('DOCTYPE 声明格式非法，已拒绝解析该文件');
+    }
+    this.skipWhitespace();
+  }
+
+  private readDoctypeQuotedLiteral(fail: (message: string) => never): string {
+    const quote = this.char();
+    if (quote !== '"' && quote !== "'") {
+      fail('DOCTYPE 声明的标识符必须使用引号包裹，已拒绝解析该文件');
+    }
+    const end = this.text.indexOf(quote, this.pos + 1);
+    if (end === -1) fail('DOCTYPE 声明的标识符未闭合，已拒绝解析该文件');
+    const value = this.text.slice(this.pos + 1, end);
+    this.pos = end + 1;
+    return value;
   }
 
   private rejectBangNode(): never {
@@ -402,7 +536,8 @@ interface ParsedDocument {
 const parsePlistDocument = (content: string): ParsedDocument => {
   const scanner = new PlistScanner(content);
   try {
-    scanner.skipMisc();
+    // The prolog is the only place a (standard plist) DOCTYPE may appear.
+    scanner.skipProlog();
     const rootTag = scanner.expectOpenTag();
     if (rootTag.name !== 'plist') {
       throw new PlistSyntaxError(

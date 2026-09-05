@@ -23,9 +23,64 @@ export type { LocalFileHint } from './playlist.js';
 
 const XML_PREFIXES = ['<?xml', '<plist'] as const;
 
+/**
+ * Upper bound (in characters) for the bounded prolog scan below. Real exports
+ * carry only a short XML declaration and the standard DOCTYPE, so 4096 is
+ * generous; anything beyond it is treated as an unknown format to keep the
+ * sniffer immune to pathological inputs (e.g. megabytes of comments).
+ */
+const XML_PROLOG_SCAN_LIMIT = 4096;
+
+const isXmlWhitespaceChar = (ch: string | undefined): boolean =>
+  ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n';
+
+/**
+ * Bounded scan over an XML prolog: skips whitespace, an optional
+ * `<?xml ... ?>` declaration and any number of `<!-- ... -->` comments (up to
+ * {@link XML_PROLOG_SCAN_LIMIT} characters in total), then reports the first
+ * markup construct. `<!DOCTYPE`/`<!doctype` openings are only *detected*, never
+ * interpreted — whether the declaration is the standard Apple plist DOCTYPE is
+ * decided exclusively by the strict parser (which rejects internal subsets,
+ * foreign DTDs, duplicates and lowercase keywords with
+ * IMPORT_XML_DOCTYPE_FORBIDDEN). Exceeding the scan limit without reaching an
+ * element keeps the pre-existing `unknown` routing.
+ */
+const xmlPrologFirstMarkup = (content: string): 'plist' | 'doctype' | 'other' => {
+  let pos = 0;
+  for (;;) {
+    while (
+      pos < content.length &&
+      pos <= XML_PROLOG_SCAN_LIMIT &&
+      isXmlWhitespaceChar(content[pos])
+    ) pos += 1;
+    if (pos > XML_PROLOG_SCAN_LIMIT) return 'other';
+    if (content.startsWith('<!--', pos)) {
+      const end = content.indexOf('-->', pos + 4);
+      if (end === -1) return 'other';
+      pos = end + 3;
+      if (pos > XML_PROLOG_SCAN_LIMIT) return 'other';
+      continue;
+    }
+    if (content.startsWith('<?xml', pos)) {
+      const end = content.indexOf('?>', pos + 5);
+      if (end === -1) return 'other';
+      pos = end + 2;
+      if (pos > XML_PROLOG_SCAN_LIMIT) return 'other';
+      continue;
+    }
+    break;
+  }
+  if (content.startsWith('<plist', pos)) return 'plist';
+  if (content.startsWith('<!DOCTYPE', pos) || content.startsWith('<!doctype', pos)) {
+    return 'doctype';
+  }
+  return 'other';
+};
+
 const contentKindOf = (content: string): 'xml' | 'json' | 'text' | 'unknown' => {
   const head = content.trimStart().slice(0, 64).toLowerCase();
   if (XML_PREFIXES.some((prefix) => head.startsWith(prefix))) return 'xml';
+  if (xmlPrologFirstMarkup(content) !== 'other') return 'xml';
   if (head.startsWith('{')) return 'json';
   const firstLine = content.trimStart().split(/\r\n|\n|\r/u, 1)[0] ?? '';
   if (firstLine.includes('\t')) return 'text';
@@ -37,6 +92,9 @@ const contentKindOf = (content: string): 'xml' | 'json' | 'text' | 'unknown' => 
  *
  * Routing order after BOM-aware decoding:
  *   1. `<?xml` / `<plist` prefix → plist XML importer
+ *      (a bounded prolog scan also routes `<!DOCTYPE`-first plists — preceded
+ *      by whitespace, an XML declaration and/or comments — to the same strict
+ *      parser, which alone decides whether the DOCTYPE is acceptable)
  *   2. `{` prefix → JSON envelope importer
  *   3. first line containing a tab → Apple Music text exporter
  *   4. anything else → structured "unrecognized format" error

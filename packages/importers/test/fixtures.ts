@@ -123,6 +123,10 @@ export const xmlPlaylistEntry = (spec: XmlPlaylistSpec): string => {
   );
 };
 
+/** The standard DOCTYPE declaration emitted by iTunes / Apple Music exports. */
+export const PLIST_STANDARD_DOCTYPE =
+  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">';
+
 export interface XmlDocSpec {
   readonly tracks?: readonly XmlTrackSpec[];
   readonly playlists?: readonly XmlPlaylistSpec[];
@@ -133,12 +137,17 @@ export interface XmlDocSpec {
   /** Replaces the value under `<plist>` entirely (for root-shape tests). */
   readonly rootValue?: string;
   readonly includeDoctype?: boolean;
+  /**
+   * Overrides the prolog DOCTYPE chunk (injected independently of
+   * `includeDoctype`); defaults to the standard declaration when
+   * `includeDoctype` is set.
+   */
+  readonly doctypeRaw?: string;
 }
 
 export const plistLibraryXml = (spec: XmlDocSpec): string => {
-  const doctype = spec.includeDoctype
-    ? '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-    : '';
+  const doctype =
+    spec.doctypeRaw ?? (spec.includeDoctype ? PLIST_STANDARD_DOCTYPE : '');
   const tracks =
     spec.tracksRaw ?? `<dict>${(spec.tracks ?? []).map(xmlTrackEntry).join('')}</dict>`;
   const playlists =

