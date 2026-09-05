@@ -236,6 +236,10 @@ export const createJobRegistry = (options: JobRegistryOptions): JobRegistry => {
       const record = records.get(jobId);
       if (record === undefined) return undefined;
       deleteIfExpired(record);
+      // The local `record` still holds `result` after deleteIfExpired removed
+      // the Map entry, so validity must be re-confirmed against the Map
+      // instead of trusting the stale snapshot.
+      if (!records.has(jobId)) return undefined;
       return record.status === 'completed' ? record.result : undefined;
     },
     cancel(jobId) {

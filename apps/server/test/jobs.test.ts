@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AppError, type Playlist } from '@playlist-exporter/contracts';
-import { createJobRegistry, type JobRunContext } from '../src/jobs.js';
+import { createJobRegistry, type JobRunContext, type TimerHandle } from '../src/jobs.js';
 
 const playlist = (id: string): Playlist => ({
   id,
@@ -21,6 +21,35 @@ const deferred = <T>() => {
 
 const flush = async (): Promise<void> => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
+};
+
+interface FakeTimer {
+  readonly callback: () => void;
+  readonly at: number;
+}
+
+// Deterministic scheduler: no real timers are ever created. `fireNextTimer`
+// runs the earliest callback regardless of its deadline so the reschedule
+// branch of `expire` stays observable.
+const fakeClock = (start: number) => {
+  const clock = { now: start };
+  let timers: FakeTimer[] = [];
+  const setTimer = (callback: () => void, delayMs: number): FakeTimer => {
+    const timer: FakeTimer = { callback, at: clock.now + delayMs };
+    timers = [...timers, timer];
+    return timer;
+  };
+  const clearTimer = (handle: TimerHandle): void => {
+    timers = timers.filter(timer => timer !== handle);
+  };
+  const fireNextTimer = (): void => {
+    const timer = [...timers].sort((a, b) => a.at - b.at)[0];
+    if (timer === undefined) return;
+    timers = timers.filter(candidate => candidate !== timer);
+    timer.callback();
+  };
+  const pendingTimers = (): number => timers.length;
+  return { clock, setTimer, clearTimer, fireNextTimer, pendingTimers };
 };
 
 describe('job registry', () => {
@@ -134,6 +163,70 @@ describe('job registry', () => {
     now = 1_500;
     expire();
     expect(jobs.get('expiring')).toBeUndefined();
+    jobs.close();
+  });
+
+  it('serves completed results before the ttl boundary and never from it onward', async () => {
+    const timer = fakeClock(1_000);
+    const jobs = createJobRegistry({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      terminalTtlMs: 500,
+      now: () => timer.clock.now,
+      setTimer: timer.setTimer,
+      clearTimer: timer.clearTimer,
+      idFactory: () => 'ttl-result',
+    });
+    jobs.submit('netease', async () => playlist('done'));
+    await flush();
+
+    timer.clock.now = 1_499;
+    expect(jobs.get('ttl-result')?.status).toBe('completed');
+    expect(jobs.get('ttl-result')?.result?.id).toBe('done');
+    expect(jobs.getCompletedResult('ttl-result')?.id).toBe('done');
+
+    // Exactly at the boundary the record counts as expired. getCompletedResult
+    // is the first lookup here: after deleteIfExpired removed the Map entry it
+    // must not fall back to the stale local record and serve the result.
+    timer.clock.now = 1_500;
+    expect(jobs.getCompletedResult('ttl-result')).toBeUndefined();
+    expect(jobs.get('ttl-result')).toBeUndefined();
+
+    timer.clock.now = 1_501;
+    expect(jobs.getCompletedResult('ttl-result')).toBeUndefined();
+    expect(jobs.get('ttl-result')).toBeUndefined();
+    jobs.close();
+  });
+
+  it('keeps expired results unavailable when the injected scheduler fires', async () => {
+    const timer = fakeClock(1_000);
+    const jobs = createJobRegistry({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      terminalTtlMs: 500,
+      now: () => timer.clock.now,
+      setTimer: timer.setTimer,
+      clearTimer: timer.clearTimer,
+      idFactory: () => 'ttl-scheduler',
+    });
+    jobs.submit('netease', async () => playlist('done'));
+    await flush();
+
+    // Firing early keeps the record and reschedules the expiry callback.
+    timer.clock.now = 1_499;
+    timer.fireNextTimer();
+    expect(timer.pendingTimers()).toBe(1);
+    expect(jobs.get('ttl-scheduler')?.status).toBe('completed');
+    expect(jobs.getCompletedResult('ttl-scheduler')?.id).toBe('done');
+
+    timer.clock.now = 1_500;
+    timer.fireNextTimer();
+    expect(timer.pendingTimers()).toBe(0);
+    expect(jobs.get('ttl-scheduler')).toBeUndefined();
+    expect(jobs.getCompletedResult('ttl-scheduler')).toBeUndefined();
+
+    jobs.sweep();
+    expect(jobs.getCompletedResult('ttl-scheduler')).toBeUndefined();
     jobs.close();
   });
 

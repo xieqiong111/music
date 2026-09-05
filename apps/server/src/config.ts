@@ -87,10 +87,14 @@ const parseOrigin = (candidate: string): string => {
     throw configError('ALLOWED_ORIGINS', '包含无效来源');
   }
   if ((url.protocol !== 'http:' && url.protocol !== 'https:') ||
-      url.username !== '' || url.password !== '' || url.origin !== candidate ||
+      url.username !== '' || url.password !== '' ||
       url.pathname !== '/' || url.search !== '' || url.hash !== '') {
     throw configError('ALLOWED_ORIGINS', '必须只包含完整 HTTP(S) origin');
   }
+  // Return the canonical origin (URL drops default ports 80/443 and
+  // normalizes scheme/host case) so entries such as `http://127.0.0.1:80`,
+  // `http://127.0.0.1` and `HTTP://Example.COM:4319/` collapse onto the exact
+  // form browsers send in the Origin header.
   return url.origin;
 };
 
@@ -99,7 +103,9 @@ const defaultOrigins = (host: string, port: number): string[] => {
   const formatted = isIP(host) === 6 || host.includes(':') ? `[${host}]` : host;
   const values = [`http://${formatted}:${port}`];
   if (host.startsWith('127.')) values.push(`http://localhost:${port}`);
-  return values;
+  // Route through parseOrigin so default ports (80/443) yield canonical
+  // origins instead of e.g. `http://127.0.0.1:80`.
+  return [...new Set(values.map(parseOrigin))];
 };
 
 const parseOrigins = (raw: string | undefined, host: string, port: number): string[] => {

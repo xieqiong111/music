@@ -295,6 +295,12 @@ export const createServerApp = (dependencies: ServerAppDependencies) => {
       artifact.bytes.byteOffset,
       artifact.bytes.byteOffset + artifact.bytes.byteLength,
     ) as ArrayBuffer;
+    // This route returns a raw Response, so headers the CORS middleware staged
+    // with context.header() are not applied by Hono to it. The origin has
+    // already passed the Origin+Bearer checks above, so repeat it here and
+    // expose Content-Disposition: without it a real cross-origin browser fetch
+    // (unlike the same-origin Vite proxy) cannot read the download filename.
+    const requestOrigin = context.req.header('origin');
     return new Response(bytes, {
       status: 200,
       headers: {
@@ -309,6 +315,11 @@ export const createServerApp = (dependencies: ServerAppDependencies) => {
         'x-export-encoding': artifact.encoding,
         'x-export-line-ending': artifact.lineEnding,
         'x-export-bom': String(artifact.bom),
+        ...(requestOrigin === undefined ? {} : {
+          'access-control-allow-origin': requestOrigin,
+          'vary': 'Origin',
+        }),
+        'access-control-expose-headers': 'Content-Disposition',
       },
     });
   });

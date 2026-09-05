@@ -87,3 +87,61 @@ describe('server config', () => {
     }
   });
 });
+
+describe('server config origin canonicalization', () => {
+  // Mirrors docker-compose.yml: the container always receives an explicit
+  // ALLOWED_ORIGINS derived from the host PORT plus a synthetic token.
+  const composeEnv = (port: string): Record<string, string> => ({
+    HOST: '0.0.0.0',
+    ACCESS_TOKEN: 'synthetic-token',
+    PORT: port,
+    ALLOWED_ORIGINS: `http://127.0.0.1:${port},http://localhost:${port}`,
+  });
+
+  it.each(['4319', '4567', '80'])(
+    'accepts the docker-compose derived whitelist for PORT=%s',
+    port => expect(() => loadServerConfig(composeEnv(port))).not.toThrow(),
+  );
+
+  it('keeps explicit non-default ports verbatim in the whitelist', () => {
+    expect(loadServerConfig(composeEnv('4319')).allowedOrigins)
+      .toEqual(['http://127.0.0.1:4319', 'http://localhost:4319']);
+    expect(loadServerConfig(composeEnv('4567')).allowedOrigins)
+      .toEqual(['http://127.0.0.1:4567', 'http://localhost:4567']);
+  });
+
+  it('canonicalizes default-port 80 origins to the browser Origin form', () => {
+    expect(loadServerConfig(composeEnv('80')).allowedOrigins)
+      .toEqual(['http://127.0.0.1', 'http://localhost']);
+    expect(loadServerConfig({ PORT: '80' }).allowedOrigins)
+      .toEqual(['http://127.0.0.1', 'http://localhost']);
+  });
+
+  it('dedupes origins that canonicalize to the same value', () => {
+    expect(loadServerConfig({
+      ALLOWED_ORIGINS: 'http://127.0.0.1:80,http://127.0.0.1',
+    }).allowedOrigins).toEqual(['http://127.0.0.1']);
+  });
+
+  it('normalizes case, default ports and trailing slashes in explicit origins', () => {
+    expect(loadServerConfig({
+      ALLOWED_ORIGINS: 'HTTP://Example.COM:4319/,https://Nas.Example:443',
+    }).allowedOrigins).toEqual(['http://example.com:4319', 'https://nas.example']);
+  });
+
+  it.each([
+    ['the wildcard', '*', /ALLOWED_ORIGINS 包含无效来源/u],
+    ['the null origin', 'null', /ALLOWED_ORIGINS 包含无效来源/u],
+    ['an empty entry', '', /ALLOWED_ORIGINS 不能为空/u],
+    ['a path', 'http://x/a', /ALLOWED_ORIGINS 必须只包含完整 HTTP\(S\) origin/u],
+    ['userinfo', 'https://user:pass@nas.example', /ALLOWED_ORIGINS 必须只包含完整 HTTP\(S\) origin/u],
+    ['a non-http scheme', 'ftp://files.example', /ALLOWED_ORIGINS 必须只包含完整 HTTP\(S\) origin/u],
+  ])('still rejects %s', (_label, origin, pattern) => {
+    expect(() => loadServerConfig({ ALLOWED_ORIGINS: origin })).toThrow(pattern);
+  });
+
+  it('derives no default origins for a non-loopback host', () => {
+    expect(loadServerConfig({ HOST: '0.0.0.0', ACCESS_TOKEN: 'secret' }).allowedOrigins)
+      .toEqual([]);
+  });
+});
