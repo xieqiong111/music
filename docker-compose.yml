@@ -11,12 +11,16 @@
 #     宿主机回环由端口映射 "127.0.0.1:4319:4319" 保证（外部/局域网无法访问）。
 #   - 因此 compose 下服务端必然是非 loopback 监听，按既定安全不变量
 #     ACCESS_TOKEN 必填：缺失或为空时 compose 会直接报错拒绝启动。
+#   - ALLOWED_ORIGINS 显式传入：HOST=0.0.0.0 时服务端不会推导任何默认白名单
+#     （默认为空、拒绝所有跨源 POST），因此必须显式声明浏览器实际使用的 origin。
+#     默认服务（app）由 compose 按宿主映射端口自动传入 127.0.0.1 / localhost 两个
+#     origin；不放宽为 *，也不绕过 Origin 检查（服务端本身会拒绝包含 * 的值）。
 #   - 根文件系统只读（read_only），可写目录只有 tmpfs /tmp 与数据卷 /data。
 
 x-app-common: &app-common
   build: .
   image: playlist-exporter:local
-  environment:
+  environment: &app-env
     # 容器内监听所有接口（容器隔离即边界）；宿主机暴露范围由 ports 决定。
     HOST: 0.0.0.0
     # 容器内端口固定 4319（与 EXPOSE/healthcheck 一致）。
@@ -25,6 +29,10 @@ x-app-common: &app-common
     WEB_DIST: /app/web/dist
     # 从 .env 读取；未设置/为空时直接报错（安全不变量）。
     ACCESS_TOKEN: ${ACCESS_TOKEN:?请在 .env 中设置 ACCESS_TOKEN}
+    # 与默认服务宿主映射端口（127.0.0.1:${PORT:-4319}:4319）保持一致：
+    # 浏览器从 http://127.0.0.1:<PORT> 或 http://localhost:<PORT> 访问 UI 时，
+    # 其 Origin 才能通过服务端白名单（逗号分隔、精确匹配、必须带端口的完整 origin）。
+    ALLOWED_ORIGINS: http://127.0.0.1:${PORT:-4319},http://localhost:${PORT:-4319}
   read_only: true
   tmpfs:
     - /tmp:size=16m,mode=1777
@@ -54,12 +62,22 @@ services:
 
   # ⚠️ LAN 模式警告 ⚠️
   # app-lan 把端口绑定到宿主机所有网卡（0.0.0.0），局域网内任何设备都能访问本服务。
-  # 仅当你完全理解暴露风险时才启用，且必须使用强 ACCESS_TOKEN（≥32 字节随机值）：
-  #   docker compose --profile lan up -d app-lan
+  # 仅当你完全理解暴露风险时才启用，且必须：
+  #   1. 使用强 ACCESS_TOKEN（≥32 字节随机值）；
+  #   2. 在 .env 中显式设置 ALLOWED_ORIGINS 为局域网设备浏览器实际访问的完整
+  #      UI origin（协议+主机+端口，多个用英文逗号分隔），例如：
+  #        ALLOWED_ORIGINS=http://192.168.1.49:4319
+  #      未设置时仅回退到 127.0.0.1/localhost:4319（本机可用，其他设备一律 403）。
+  #   3. 执行：docker compose --profile lan up -d app-lan
   # 不要同时运行 app 与 app-lan（宿主机端口冲突）。
   app-lan:
     <<: *app-common
     profiles: ["lan"]
     container_name: playlist-exporter-lan
+    environment:
+      <<: *app-env
+      # LAN 的实际 UI origin 取决于宿主机 LAN IP，compose 无法推断，
+      # 因此从 .env 读取；未设置时只保留本机回环 origin（其余设备 403，宁可拒绝）。
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://127.0.0.1:4319,http://localhost:4319}
     ports:
       - "4319:4319"

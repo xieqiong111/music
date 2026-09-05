@@ -1,3 +1,10 @@
 packages:
   - packages/*
   - apps/*
+
+# pnpm 11 在非交互环境(容器/CI)下,依赖的构建脚本未经批准会直接报
+# ERR_PNPM_IGNORED_BUILDS(pnpm 11 移除了 onlyBuiltDependencies,改为 allowBuilds
+# 映射)。esbuild 的 postinstall 是仓库中唯一需要批准的构建脚本,显式批准以保证
+# docker build 与 CI 的 --frozen-lockfile 安装可复现。
+allowBuilds:
+  esbuild: true

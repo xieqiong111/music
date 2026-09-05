@@ -10,13 +10,25 @@ WORKDIR /app
 RUN npm install -g pnpm@11.19.0
 
 # 先只复制清单文件：锁文件未变时依赖安装层可被 Docker 缓存复用。
+# 清单必须覆盖 pnpm-workspace.yaml（packages/* + apps/*）下的全部工作区 importer：
+# pnpm-lock.yaml 的 importers 含 apps/desktop、packages/importers、provider-apple、
+# provider-qq 等条目，缺少任何一个 package.json 都会让 --frozen-lockfile 因
+# "锁文件与磁盘清单不一致" 直接失败（server/web 的源码也依赖这些 workspace 包）。
+# apps/desktop（Tauri 壳）同样必须提供清单，但其 devDependency（@tauri-apps/cli，
+# 锁文件已含 linux-x64-musl 变体）只落在本构建阶段；运行阶段不复制 node_modules，
+# 且镜像构建不执行 tauri build（需要 Rust 工具链，桌面打包在 Docker 之外进行），
+# 因此不会进入最终镜像。
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY apps/desktop/package.json apps/desktop/package.json
 COPY apps/server/package.json apps/server/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/exporters/package.json packages/exporters/package.json
+COPY packages/importers/package.json packages/importers/package.json
+COPY packages/provider-apple/package.json packages/provider-apple/package.json
 COPY packages/provider-netease/package.json packages/provider-netease/package.json
+COPY packages/provider-qq/package.json packages/provider-qq/package.json
 RUN pnpm install --frozen-lockfile
 
 # 再复制源码并构建（apps/*/dist 已被 .dockerignore 排除，在容器内重新生成）。
@@ -37,6 +49,13 @@ RUN addgroup -g 10001 app \
 COPY --from=build /app/apps/server/dist/index.js /app/dist/index.js
 COPY --from=build /app/apps/server/package.json /app/package.json
 COPY --from=build /app/apps/web/dist /app/web/dist
+
+# 构建产物从 build 阶段带入了受限 umask 的权限（如 0660 的 root:root bundle），
+# 非 root 运行用户将无法读取。a+rX 为所有用户补读权限；对目录补执行位以保证
+# 可遍历，对已有任一执行位的文件补齐执行位（本镜像复制的运行产物均无执行位，
+# 因此实际效果是目录可遍历、文件保持不可执行）；属主保持 root，应用用户只读。
+# 注意不能用 COPY --chmod=0644：它会把目录也置为 0644，丢掉目录的遍历位。
+RUN chmod -R a+rX /app
 
 # HOST 故意不设置：镜像单独运行时保持默认 127.0.0.1（loopback，最安全）；
 # docker-compose 部署通过 environment 显式覆盖 HOST=0.0.0.0（届时 ACCESS_TOKEN 必填）。

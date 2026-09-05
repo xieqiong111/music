@@ -89,7 +89,11 @@ docker compose up -d --build
 
 - **必须设置 `ACCESS_TOKEN`**：这是容器场景下访问 API 的唯一凭证。
 - **默认仅映射 `127.0.0.1`**：即只有宿主机本机可以访问。
-- 提供 **LAN profile** 用于把服务暴露到局域网（便于从其它设备访问）。这属于高风险操作：局域网内的任何设备都能尝试访问该服务。启用 LAN profile 前请确认你理解风险，并务必使用足够长的随机令牌；不要将端口直接映射到 `0.0.0.0` 而不设置令牌。
+- **浏览器跨源白名单已由 compose 显式配置**：默认服务会把 `http://127.0.0.1:<PORT>` 与 `http://localhost:<PORT>`（`PORT` 为 `.env` 中的宿主端口）作为 `ALLOWED_ORIGINS` 传入容器，因此从这两个地址打开 PWA 即可正常调用 API，无需额外配置。若通过其它 origin 访问，必须把该完整 origin（协议+主机+端口）加入 `ALLOWED_ORIGINS`。
+- 提供 **LAN profile** 用于把服务暴露到局域网（便于从其它设备访问）。这属于高风险操作：局域网内的任何设备都能尝试访问该服务。启用 LAN profile 前请确认你理解风险，并务必：
+  1. 使用足够长的随机令牌；不要将端口直接映射到 `0.0.0.0` 而不设置令牌。
+  2. **在 `.env` 中显式设置 `ALLOWED_ORIGINS`** 为局域网设备浏览器实际访问的完整 UI origin（如 `ALLOWED_ORIGINS=http://192.168.1.49:4319`）。LAN 模式下服务端无法推断该 origin，未设置时其他设备的浏览器请求会被 403（`ORIGIN_NOT_ALLOWED`）拒绝；不要填 `*`（服务端直接拒绝），也不要试图绕过 Origin 检查。
+  3. 用 `docker compose --profile lan up -d app-lan` 启动，并确认浏览器访问的地址与 `ALLOWED_ORIGINS` 完全一致（含端口）。
 
 ## 使用说明
 
@@ -146,7 +150,7 @@ docker compose up -d --build
 | `pnpm --filter @playlist-exporter/web build` | 构建 Web 生产包（PWA 静态资源） |
 | `pnpm --filter @playlist-exporter/web e2e` | 运行 Playwright 端到端测试（自动构建并启动 vite preview，端口 4321） |
 
-CI 在 push 到 `main` 与所有 Pull Request 时运行：类型检查、测试与双端构建跑在 Node 22/24 × Linux/Windows/macOS 矩阵上，另有独立的 E2E job 与安全 job（gitleaks 密钥扫描、生产依赖审计）；Docker 镜像的多架构（amd64/arm64）构建由 `.github/workflows/docker.yml` 验证（仅构建不推送）。
+CI 在 push 到 `main` 与所有 Pull Request 时运行：类型检查、测试与双端构建跑在 Node 22/24 × Linux/Windows/macOS 矩阵上，另有独立的 E2E job 与安全 job（gitleaks 密钥扫描、生产依赖审计）；Docker 镜像的多架构（amd64/arm64）构建由 `.github/workflows/docker.yml` 验证（仅构建不推送），同一 workflow 中的 smoke job 会构建 amd64 镜像并实际运行容器，执行 `scripts/docker-smoke.mjs` 的健康检查、令牌与 Origin 白名单、API 校验层矩阵（不含真实平台请求）。
 
 ## 许可与第三方
 
