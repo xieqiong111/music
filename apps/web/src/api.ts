@@ -59,6 +59,26 @@ export interface LibraryEntryPatch {
   readonly album?: string | null;
 }
 
+/** NAS 上可浏览的一个子目录项。 */
+export interface BrowseDirEntry {
+  readonly name: string;
+  readonly path: string;
+}
+
+/** GET /api/local-library/browse（无参）：NAS 卷根列表，可能为空。 */
+export interface BrowseRootsResult {
+  readonly browseRoots: ReadonlyArray<string>;
+}
+
+/** GET /api/local-library/browse?path=...：某个目录下的可读子目录。 */
+export interface BrowseDirsResult {
+  readonly path: string;
+  readonly parent: string | null;
+  readonly dirs: ReadonlyArray<BrowseDirEntry>;
+}
+
+export type BrowseResult = BrowseRootsResult | BrowseDirsResult;
+
 export interface JobError {
   readonly code: string;
   readonly message: string;
@@ -104,6 +124,8 @@ export interface PlaylistService {
   updateCredentials(update: CredentialsUpdate): Promise<{ readonly username: string }>;
   getLocalLibrary(): Promise<LocalLibraryState>;
   addLibraryRoot(path: string): Promise<LocalLibraryState>;
+  /** 浏览服务端可访问的目录；不传 path 返回卷根列表，传 path 返回其子目录。 */
+  browseDirs(path?: string, signal?: AbortSignal): Promise<BrowseResult>;
   removeLibraryRoot(id: string): Promise<LocalLibraryState>;
   rescanLibraryRoot(id: string): Promise<LocalLibraryState>;
   editLibraryEntry(id: string, patch: LibraryEntryPatch): Promise<LocalLibraryEntry>;
@@ -265,6 +287,30 @@ const parseLibraryState = (raw: unknown): LocalLibraryState => {
     scan: { active: raw.scan.active, scannedFiles: raw.scan.scannedFiles },
     truncated: raw.truncated,
   };
+};
+
+const parseBrowseDirEntry = (raw: unknown): BrowseDirEntry => {
+  if (!isRecord(raw) || typeof raw.name !== 'string' || typeof raw.path !== 'string') {
+    throw invalidServerResponse();
+  }
+  return { name: raw.name, path: raw.path };
+};
+
+const parseBrowseResult = (raw: unknown): BrowseResult => {
+  if (isRecord(raw) && Array.isArray(raw.browseRoots) &&
+      raw.browseRoots.every(root => typeof root === 'string')) {
+    return { browseRoots: [...raw.browseRoots as ReadonlyArray<string>] };
+  }
+  if (isRecord(raw) && typeof raw.path === 'string' &&
+      (raw.parent === null || typeof raw.parent === 'string') &&
+      Array.isArray(raw.dirs)) {
+    return {
+      path: raw.path,
+      parent: raw.parent,
+      dirs: raw.dirs.map(parseBrowseDirEntry),
+    };
+  }
+  throw invalidServerResponse();
 };
 
 const parseJobSnapshot = (raw: unknown): JobSnapshot => {
@@ -434,6 +480,12 @@ export class HttpPlaylistService implements PlaylistService {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path }),
     }).then(parseLibraryState);
+  }
+
+  browseDirs(path?: string, signal?: AbortSignal): Promise<BrowseResult> {
+    const query = path === undefined ? '' : `?path=${encodeURIComponent(path)}`;
+    return this.#json<unknown>(`/api/local-library/browse${query}`, { signal })
+      .then(parseBrowseResult);
   }
 
   removeLibraryRoot(id: string): Promise<LocalLibraryState> {

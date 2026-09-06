@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Playlist } from '@playlist-exporter/contracts';
@@ -119,6 +119,7 @@ const service = (overrides: Partial<PlaylistService> = {}): PlaylistService => (
   login: vi.fn(async () => ({ username: 'admin', expiresAt: '2026-09-12T00:00:00.000Z' })),
   logout: vi.fn(async () => undefined),
   updateCredentials: vi.fn(async () => ({ username: 'admin' })),
+  browseDirs: vi.fn(async () => ({ browseRoots: [] as readonly string[] })),
   getLocalLibrary: vi.fn(async () => emptyLibrary()),
   addLibraryRoot: vi.fn(async () => emptyLibrary()),
   removeLibraryRoot: vi.fn(async () => emptyLibrary()),
@@ -396,6 +397,10 @@ describe('App', () => {
 
     await user.click(await screen.findByRole('button', { name: '本地音乐库' }));
     expect(screen.getByText('还没有歌曲。添加文件夹后服务端会自动扫描音频文件。')).toBeInTheDocument();
+    // 主入口是“选择文件夹”弹窗；手填路径折叠在“手动输入路径”入口之后
+    expect(screen.getByRole('button', { name: '选择文件夹' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('添加音乐文件夹路径')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '手动输入路径' }));
     await user.type(screen.getByLabelText('添加音乐文件夹路径'), '/music/mp3');
     await user.click(screen.getByRole('button', { name: '添加文件夹' }));
     expect(mockService.addLibraryRoot).toHaveBeenCalledWith('/music/mp3');
@@ -409,6 +414,105 @@ describe('App', () => {
 
     await user.click(screen.getByRole('button', { name: '删除文件夹' }));
     expect(mockService.removeLibraryRoot).toHaveBeenCalledWith('root-1');
+  });
+
+  it('adds a folder through the browse dialog: roots, navigation, and the PUT body', async () => {
+    const browseDirs = vi.fn(async (path?: string) => {
+      if (path === undefined) return { browseRoots: ['/vol1', '/vol2'] as readonly string[] };
+      if (path === '/vol1') {
+        return {
+          path: '/vol1',
+          parent: null,
+          dirs: [{ name: 'music', path: '/vol1/music' }] as const,
+        };
+      }
+      return { path: '/vol1/music', parent: '/vol1', dirs: [] as const };
+    });
+    const mockService = service({
+      browseDirs,
+      addLibraryRoot: vi.fn(async () => populatedLibrary()),
+    });
+    const user = userEvent.setup();
+    render(<App service={mockService} />);
+
+    await user.click(await screen.findByRole('button', { name: '本地音乐库' }));
+    await user.click(await screen.findByRole('button', { name: '选择文件夹' }));
+
+    const dialog = await screen.findByRole('dialog');
+    // 打开时请求 browse(无参) 拿 browseRoots，并展示为入口按钮
+    expect(browseDirs).toHaveBeenCalledWith(undefined, expect.anything());
+    expect(await within(dialog).findByRole('button', { name: '/vol1' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '/vol2' })).toBeInTheDocument();
+
+    // 点击 root → 加载该 path 的 dirs；根目录的“上一级”禁用
+    await user.click(within(dialog).getByRole('button', { name: '/vol1' }));
+    expect(await within(dialog).findByText('/vol1')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '上一级' })).toBeDisabled();
+    await user.click(within(dialog).getByRole('button', { name: 'music' }));
+
+    // 目录行点击 = 进入该子目录（重新请求 browse?path=...）
+    expect(browseDirs).toHaveBeenCalledWith('/vol1/music', expect.anything());
+    expect(await within(dialog).findByText('/vol1/music')).toBeInTheDocument();
+    expect(within(dialog).getByText('此目录没有可访问的子文件夹，可直接选择当前文件夹')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '上一级' })).toBeEnabled();
+
+    // “上一级”回到父目录
+    await user.click(within(dialog).getByRole('button', { name: '上一级' }));
+    expect(await within(dialog).findByRole('button', { name: 'music' })).toBeInTheDocument();
+
+    // 回到子目录并确认添加 → PUT {path: 当前path}，弹窗关闭且库状态刷新
+    await user.click(within(dialog).getByRole('button', { name: 'music' }));
+    await within(dialog).findByText('/vol1/music');
+    await user.click(within(dialog).getByRole('button', { name: '将当前文件夹加入音乐库' }));
+    expect(mockService.addLibraryRoot).toHaveBeenCalledWith('/vol1/music');
+    expect(await screen.findByText('/music/flac')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('shows the manual-input hint in the dialog when browseRoots is empty', async () => {
+    const mockService = service();
+    const user = userEvent.setup();
+    render(<App service={mockService} />);
+
+    await user.click(await screen.findByRole('button', { name: '本地音乐库' }));
+    await user.click(await screen.findByRole('button', { name: '选择文件夹' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText(/手动输入/)).toBeInTheDocument();
+    // 没有进入任何目录时不能确认添加
+    expect(within(dialog).getByRole('button', { name: '将当前文件夹加入音乐库' })).toBeDisabled();
+  });
+
+  it('shows a Chinese browse error inside the dialog and keeps it open', async () => {
+    const mockService = service({
+      browseDirs: vi.fn(async () => {
+        throw new ApiError({ code: 'INVALID_REQUEST', message: '路径无效或不存在' });
+      }),
+    });
+    const user = userEvent.setup();
+    render(<App service={mockService} />);
+
+    await user.click(await screen.findByRole('button', { name: '本地音乐库' }));
+    await user.click(await screen.findByRole('button', { name: '选择文件夹' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('路径无效或不存在');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('closes the browse dialog with Escape', async () => {
+    const mockService = service({
+      browseDirs: vi.fn(async () => ({ browseRoots: ['/vol1'] as readonly string[] })),
+    });
+    const user = userEvent.setup();
+    render(<App service={mockService} />);
+
+    await user.click(await screen.findByRole('button', { name: '本地音乐库' }));
+    await user.click(await screen.findByRole('button', { name: '选择文件夹' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('disables the local-exclusion checkbox when the library is empty and shows the hint', async () => {

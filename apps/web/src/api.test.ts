@@ -342,6 +342,78 @@ describe('HttpPlaylistService', () => {
     ]);
   });
 
+  it('browses NAS roots without a path and encodes the path query parameter', async () => {
+    const requests: string[] = [];
+    const fetchImpl = recordedFetch(async url => {
+      requests.push(url);
+      if (url === '/api/local-library/browse') {
+        return jsonResponse(JSON.stringify({ browseRoots: ['/vol1', '/vol2'] }));
+      }
+      if (url === '/api/local-library/browse?path=%2Fvol1%2F%E9%9F%B3%E4%B9%90') {
+        return jsonResponse(JSON.stringify({
+          path: '/vol1/音乐',
+          parent: '/vol1',
+          dirs: [{ name: 'flac', path: '/vol1/音乐/flac' }],
+        }));
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    const service = new HttpPlaylistService({ fetchImpl });
+
+    await expect(service.browseDirs()).resolves.toEqual({
+      browseRoots: ['/vol1', '/vol2'],
+    });
+    await expect(service.browseDirs('/vol1/音乐')).resolves.toEqual({
+      path: '/vol1/音乐',
+      parent: '/vol1',
+      dirs: [{ name: 'flac', path: '/vol1/音乐/flac' }],
+    });
+    expect(requests).toEqual([
+      '/api/local-library/browse',
+      '/api/local-library/browse?path=%2Fvol1%2F%E9%9F%B3%E4%B9%90',
+    ]);
+  });
+
+  it('forwards the abort signal on browse requests', async () => {
+    let seenSignal: AbortSignal | undefined;
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      seenSignal = init?.signal ?? undefined;
+      return jsonResponse(JSON.stringify({ browseRoots: [] }));
+    });
+    const service = new HttpPlaylistService({ fetchImpl });
+
+    await expect(service.browseDirs(undefined, controller.signal))
+      .resolves.toEqual({ browseRoots: [] });
+    expect(seenSignal).toBe(controller.signal);
+  });
+
+  it('passes 401 auth failures through from the browse endpoint', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      code: 'AUTH_REQUIRED',
+      message: '请先登录',
+    }), { status: 401, headers: { 'content-type': 'application/json' } }));
+    const service = new HttpPlaylistService({ fetchImpl });
+
+    await expect(service.browseDirs('/vol1')).rejects.toMatchObject({
+      code: 'AUTH_REQUIRED',
+      message: '请先登录',
+    });
+  });
+
+  it('rejects malformed browse payloads at the client boundary', async () => {
+    const fetchImpl = recordedFetch(async () => jsonResponse(JSON.stringify({
+      path: '/vol1',
+      parent: null,
+      dirs: [{ name: 42, path: '/vol1/flac' }],
+    })));
+    const service = new HttpPlaylistService({ fetchImpl });
+
+    await expect(service.browseDirs('/vol1')).rejects.toMatchObject({
+      code: 'INVALID_SERVER_RESPONSE',
+    });
+  });
+
   it('surfaces x-excluded-local-count only when the export response carries it', async () => {
     const baseHeaders = {
       'content-type': 'text/plain;charset=utf-8',

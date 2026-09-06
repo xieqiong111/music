@@ -146,6 +146,15 @@ async function mockAuthenticatedSession(page: Page): Promise<void> {
       }),
     });
   });
+  // “选择文件夹”弹窗的目录浏览接口：空卷根（E2E 不进入本地音乐库标签页，
+  // 该 mock 仅保证弹窗一旦打开也不会打到真实网络）。
+  await page.route('**/api/local-library/browse', async route => {
+    await route.fulfill({
+      status: 200,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ browseRoots: [] }),
+    });
+  });
 }
 
 interface JobCapture {

@@ -192,12 +192,95 @@ input, select {
 .dialog form { display: grid; gap: 0.4rem; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.2rem; }
 
+.browse-dialog { width: min(560px, 100%); }
+
+.browse-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.browse-dialog__header h2 { margin: 0; }
+
+.browse-close {
+  border: none;
+  padding: 0.25rem 0.7rem;
+  font-size: 1.2rem;
+  line-height: 1.2;
+}
+
+.browse-roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1rem 0 0;
+}
+
+.browse-roots button {
+  padding: 0.45rem 0.95rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.browse-current {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 1rem 0 0.8rem;
+}
+
+.browse-up { flex-shrink: 0; padding: 0.35rem 0.85rem; }
+
+.browse-path {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #626158;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.browse-dirs {
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid rgb(32 32 29 / 14%);
+  border-bottom: 1px solid rgb(32 32 29 / 14%);
+}
+
+.browse-dirs li { border-bottom: 1px solid rgb(32 32 29 / 14%); }
+.browse-dirs li:last-child { border-bottom: none; }
+
+.browse-dirs button {
+  display: block;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  padding: 0.7rem 0.5rem;
+  color: #20201d;
+  background: transparent;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.browse-dirs button:hover { background: rgb(230 91 63 / 12%); }
+
 .library-scan { color: #267044; }
 .library-warning { color: #a43e2b; }
 .library-error { color: #a43e2b; }
 .library-hint { color: #626158; font-size: 0.88rem; }
 
 .library-add-row, .library-search-row { max-width: 640px; }
+
+.library-add-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  max-width: 640px;
+}
 
 .library-button { padding: 0.35rem 0.85rem; margin-right: 0.4rem; }
 

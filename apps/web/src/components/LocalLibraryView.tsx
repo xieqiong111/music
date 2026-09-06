@@ -5,6 +5,7 @@ import { ApiError,
   type LocalLibraryState,
   type PlaylistService } from '../api.js';
 import { zhCN } from '../i18n/zh-CN.js';
+import { BrowseDirsDialog } from './BrowseDirsDialog.js';
 
 const formatDuration = (durationMs: number | null): string => {
   if (durationMs === null || !Number.isFinite(durationMs) || durationMs <= 0) {
@@ -55,11 +56,25 @@ export function LocalLibraryView({
   const [state, setState] = useState<LocalLibraryState>();
   const [loadError, setLoadError] = useState<string>();
   const [pathInput, setPathInput] = useState('');
+  const [manualOpen, setManualOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [query, setQuery] = useState('');
   const [editingId, setEditingId] = useState<string>();
   const [draft, setDraft] = useState<EntryDraft>();
+
+  const closeDialog = useCallback((): void => setDialogOpen(false), []);
+
+  // 弹窗“将当前文件夹加入音乐库”：与手动输入一样走 PUT /api/local-library/roots，
+  // 成功后刷新库状态并关闭弹窗；失败时抛回弹窗就地提示。
+  const confirmBrowse = useCallback(async (path: string): Promise<LocalLibraryState> => {
+    const next = await service.addLibraryRoot(path);
+    setState(next);
+    setLoadError(undefined);
+    setDialogOpen(false);
+    return next;
+  }, [service]);
 
   const refresh = useCallback(async (): Promise<LocalLibraryState | undefined> => {
     try {
@@ -204,19 +219,42 @@ export function LocalLibraryView({
       )}
       {state.truncated && <p className="library-warning">{zhCN.libraryTruncated}</p>}
 
-      <div className="input-row library-add-row">
-        <input
-          aria-label={zhCN.libraryAddLabel}
-          onChange={event => setPathInput(event.target.value)}
-          placeholder={zhCN.libraryAddPlaceholder}
-          spellCheck={false}
-          type="text"
-          value={pathInput}
-        />
-        <button disabled={busy || pathInput.trim() === ''} onClick={() => void addRoot()} type="button">
-          {zhCN.libraryAddButton}
+      <div className="library-add-row library-add-actions">
+        <button onClick={() => setDialogOpen(true)} type="button">
+          {zhCN.libraryBrowseButton}
+        </button>
+        <button
+          aria-expanded={manualOpen}
+          className="button-secondary"
+          onClick={() => setManualOpen(value => !value)}
+          type="button"
+        >
+          {zhCN.libraryManualToggle}
         </button>
       </div>
+      {manualOpen && (
+        <div className="input-row library-add-row">
+          <input
+            aria-label={zhCN.libraryAddLabel}
+            onChange={event => setPathInput(event.target.value)}
+            placeholder={zhCN.libraryAddPlaceholder}
+            spellCheck={false}
+            type="text"
+            value={pathInput}
+          />
+          <button disabled={busy || pathInput.trim() === ''} onClick={() => void addRoot()} type="button">
+            {zhCN.libraryAddButton}
+          </button>
+        </div>
+      )}
+      {dialogOpen && (
+        <BrowseDirsDialog
+          onClose={closeDialog}
+          onConfirm={confirmBrowse}
+          onSessionExpired={onSessionExpired}
+          service={service}
+        />
+      )}
       {actionError !== undefined && <p role="alert" className="library-error">{actionError}</p>}
 
       {state.roots.length > 0 && (
