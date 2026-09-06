@@ -1,6 +1,14 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { parseFile } from 'music-metadata';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -9,6 +17,7 @@ import {
   createLocalLibraryRouter,
   createLocalLibraryService,
   LocalLibraryError,
+  type BrowseDirResult,
   type EntryPatch,
   type LibraryEntry,
   type LibraryState,
@@ -164,6 +173,7 @@ const expectLibraryError = async (
   promise: Promise<unknown>,
   status: number,
   code: string,
+  messageIncludes?: string,
 ): Promise<void> => {
   let caught: unknown;
   try {
@@ -175,6 +185,9 @@ const expectLibraryError = async (
   const libraryError = caught as LocalLibraryError;
   expect(libraryError.status).toBe(status);
   expect(libraryError.code).toBe(code);
+  if (messageIncludes !== undefined) {
+    expect(libraryError.message).toContain(messageIncludes);
+  }
 };
 
 const track = (position: number, title: string, artists: string[]): Track => ({
@@ -606,6 +619,128 @@ describe('local library service', () => {
 });
 
 // ---------------------------------------------------------------------------
+// browse 目录浏览(服务层):UI 点击式选择已授权文件夹
+// ---------------------------------------------------------------------------
+
+describe('browse 目录浏览(服务层)', () => {
+  it('browseRoots:默认探测 /vol1../vol9,测试环境不存在这些卷时返回空数组', async () => {
+    const service = await createService();
+    expect(await service.browseRoots()).toEqual([]);
+  });
+
+  it('browseRoots:注入候选根列表,仅保留存在且为目录且可读的项,按名称排序', async () => {
+    const rootsDir = join(workspace, 'roots');
+    const volumeLatin = join(rootsDir, 'aaa');
+    const volumeChinese = join(rootsDir, '音乐');
+    mkdirSync(volumeLatin, { recursive: true });
+    mkdirSync(volumeChinese, { recursive: true });
+    const filePath = join(rootsDir, 'plain.txt');
+    writeFileSync(filePath, 'a file, not a dir');
+
+    const service = await createService({
+      browseRootsProbe: [volumeLatin, join(rootsDir, 'missing'), filePath, volumeChinese],
+    });
+    // 名称排序(zh-Hans-CN):汉字按拼音在前,拉丁字母随后
+    expect(await service.browseRoots()).toEqual([volumeChinese, volumeLatin]);
+  });
+
+  it('browseDir:仅列出可读的直接子目录,过滤普通文件、隐藏目录与不可读目录', async () => {
+    const root = join(workspace, 'lib-root');
+    mkdirSync(join(root, 'A'), { recursive: true });
+    mkdirSync(join(root, 'B'), { recursive: true });
+    mkdirSync(join(root, '.hidden'), { recursive: true });
+    mkdirSync(join(root, 'locked'), { recursive: true });
+    writeFileSync(join(root, 'plain.txt'), 'a file');
+    // Windows 上 chmod 000 不生效,用注入的 access 探测 mock 模拟不可读
+    const service = await createService({
+      probePathAccess: async candidate => {
+        if (basename(candidate) === 'locked') {
+          throw new Error('EACCES: 模拟无权限');
+        }
+      },
+    });
+
+    const result = await service.browseDir(root);
+    expect(result.path).toBe(root);
+    expect(result.parent).toBe(dirname(root));
+    expect(result.dirs.map(entry => entry.name)).toEqual(['A', 'B']);
+    expect(result.dirs.map(entry => entry.path)).toEqual([join(root, 'A'), join(root, 'B')]);
+  });
+
+  it('browseDir:chmod 000 的子目录同样被过滤(仅 POSIX 非 root)', async ({ skip }) => {
+    if (process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)) {
+      skip(); // Windows 上 chmod 000 不生效;root 用户无视权限位。过滤逻辑已由注入 mock 用例覆盖
+      return;
+    }
+    const root = join(workspace, 'posix-root');
+    mkdirSync(join(root, 'A'), { recursive: true });
+    const locked = join(root, 'locked');
+    mkdirSync(locked, { recursive: true });
+    chmodSync(locked, 0o000);
+    try {
+      const service = await createService();
+      const result = await service.browseDir(root);
+      expect(result.dirs.map(entry => entry.name)).toEqual(['A']);
+    } finally {
+      chmodSync(locked, 0o755); // 恢复权限,保证 afterEach 清理成功
+    }
+  });
+
+  it('browseDir:单个子目录 stat 异常时跳过该项,浏览整体不失败(坏符号链接,仅 POSIX)', async ({ skip }) => {
+    if (process.platform === 'win32') {
+      skip(); // Windows 普通权限无法创建符号链接
+      return;
+    }
+    const root = join(workspace, 'dangling-root');
+    mkdirSync(join(root, 'A'), { recursive: true });
+    symlinkSync(join(root, 'gone'), join(root, 'dangling'));
+    const service = await createService();
+    const result = await service.browseDir(root);
+    expect(result.dirs.map(entry => entry.name)).toEqual(['A']);
+  });
+
+  it('browseDir:文件系统根路径的 parent 为 null', async () => {
+    const service = await createService();
+    const result = await service.browseDir('/');
+    expect(result.parent).toBeNull();
+    expect(Array.isArray(result.dirs)).toBe(true);
+    expect(result.dirs.every(entry => entry.name !== '' && entry.path !== '')).toBe(true);
+  });
+
+  it('browseDir:不存在与非目录返回 400 "路径无效或无法访问",相对路径返回 400 "必须为绝对路径"', async () => {
+    const service = await createService();
+    await expectLibraryError(
+      service.browseDir(join(workspace, 'missing-dir')),
+      400,
+      'INVALID_REQUEST',
+      '路径无效或无法访问',
+    );
+    const filePath = join(workspace, 'plain-file.txt');
+    writeFileSync(filePath, 'a file, not a dir');
+    await expectLibraryError(service.browseDir(filePath), 400, 'INVALID_REQUEST', '路径无效或无法访问');
+    await expectLibraryError(service.browseDir('music'), 400, 'INVALID_REQUEST', '音乐库路径必须为绝对路径');
+  });
+
+  it('browseDir:中文目录名正常列出并按 zh-Hans-CN 拼音顺序排序', async () => {
+    const root = join(workspace, '中文根目录');
+    mkdirSync(join(root, '张三'), { recursive: true });
+    mkdirSync(join(root, '李四'), { recursive: true });
+    mkdirSync(join(root, '王五'), { recursive: true });
+    mkdirSync(join(root, 'Beyond'), { recursive: true });
+    const service = await createService();
+    const result = await service.browseDir(root);
+    // zh-Hans-CN 拼音序:汉字在前(李 li < 王 wang < 张 zhang),拉丁字母 Beyond 随后
+    expect(result.dirs.map(entry => entry.name)).toEqual(['李四', '王五', '张三', 'Beyond']);
+    expect(result.dirs.map(entry => entry.path)).toEqual([
+      join(root, '李四'),
+      join(root, '王五'),
+      join(root, '张三'),
+      join(root, 'Beyond'),
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 子路由(挂到测试 Hono 实例,无认证)
 // ---------------------------------------------------------------------------
 
@@ -740,5 +875,81 @@ describe('local library router', () => {
     expect(deleted.status).toBe(200);
     expect(((await deleted.json()) as LibraryState).entries.some(entry => entry.id === entryId)).toBe(false);
     await service.whenIdle();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 子路由 GET /browse(目录浏览端点,契约冻结版)
+// ---------------------------------------------------------------------------
+
+describe('local library router GET /browse', () => {
+  it('不带 path(或空 path)返回探测到的 browseRoots,且浏览不改变库状态', async () => {
+    const volume = join(workspace, 'vol1');
+    mkdirSync(volume, { recursive: true });
+    const service = await createService({ browseRootsProbe: [volume] });
+    const app = new Hono();
+    app.route('/api/local-library', createLocalLibraryRouter(service));
+
+    const response = await app.request('/api/local-library/browse');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ browseRoots: [volume] });
+
+    const emptyPath = await app.request('/api/local-library/browse?path=');
+    expect(emptyPath.status).toBe(200);
+    expect(await emptyPath.json()).toEqual({ browseRoots: [volume] });
+
+    // 浏览是纯只读操作,不会把路径加入 roots
+    expect(service.getState().roots).toEqual([]);
+  });
+
+  it('?path=<绝对路径> 返回 path/parent/dirs,dirs 仅含可读子目录', async () => {
+    const root = join(workspace, 'router-browse');
+    mkdirSync(join(root, '甲'), { recursive: true });
+    mkdirSync(join(root, '乙'), { recursive: true });
+    mkdirSync(join(root, '.git'), { recursive: true });
+    writeFileSync(join(root, 'notes.txt'), 'a file');
+    const service = await createService();
+    const app = new Hono();
+    app.route('/api/local-library', createLocalLibraryRouter(service));
+
+    const response = await app.request(`/api/local-library/browse?path=${encodeURIComponent(root)}`);
+    expect(response.status).toBe(200);
+    const body = await response.json() as BrowseDirResult;
+    expect(body.path).toBe(root);
+    expect(body.parent).toBe(dirname(root));
+    // 拼音序:甲(jia) < 乙(yi);普通文件与隐藏目录不出现
+    expect(body.dirs).toEqual([
+      { name: '甲', path: join(root, '甲') },
+      { name: '乙', path: join(root, '乙') },
+    ]);
+  });
+
+  it('?path=/ 文件系统根路径 parent 为 null', async () => {
+    const service = await createService();
+    const app = new Hono();
+    app.route('/api/local-library', createLocalLibraryRouter(service));
+
+    const response = await app.request('/api/local-library/browse?path=%2F');
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as BrowseDirResult).parent).toBeNull();
+  });
+
+  it('?path= 相对路径与无效路径返回 400 中文错误', async () => {
+    const service = await createService();
+    const app = new Hono();
+    app.route('/api/local-library', createLocalLibraryRouter(service));
+
+    const relative = await app.request('/api/local-library/browse?path=music');
+    expect(relative.status).toBe(400);
+    expect(await relative.json()).toMatchObject({
+      code: 'INVALID_REQUEST',
+      message: expect.stringContaining('必须为绝对路径'),
+    });
+
+    const missing = await app.request(
+      `/api/local-library/browse?path=${encodeURIComponent(join(workspace, 'no-such-dir'))}`,
+    );
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toMatchObject({ code: 'INVALID_REQUEST', message: '路径无效或无法访问' });
   });
 });

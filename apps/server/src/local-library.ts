@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { parseFile } from 'music-metadata';
 import type { IAudioMetadata } from 'music-metadata';
@@ -43,6 +44,23 @@ export interface LibraryScanStatus {
   scannedFiles: number;
 }
 
+/** 浏览结果中的一个子目录 */
+export interface BrowseEntry {
+  name: string;
+  /** 子目录绝对路径(可直接作为下一次 browse 的 path 参数) */
+  path: string;
+}
+
+export interface BrowseDirResult {
+  /** 规范化后的绝对路径 */
+  path: string;
+  /** 父目录绝对路径;path 已是文件系统根(如 '/')时为 null */
+  parent: string | null;
+  /** 直接子目录中"是目录且可读"的条目,按名称(zh-Hans-CN)排序;
+   *  普通文件、点开头隐藏目录与不可读目录一律不出现(即"只展示已授权文件夹") */
+  dirs: BrowseEntry[];
+}
+
 export interface LibraryState {
   roots: LibraryRoot[];
   entries: LibraryEntry[];
@@ -59,6 +77,9 @@ export interface EntryPatch {
 
 export type ParseAudioFile = (filePath: string, options: { duration: boolean }) => Promise<IAudioMetadata>;
 
+/** 目录可访问性探测:可访问时 resolve,不可访问时 reject;默认 fs.access(path, R_OK|X_OK) */
+export type ProbePathAccess = (absolutePath: string) => Promise<void>;
+
 export interface LocalLibraryServiceOptions {
   /** 持久化文件路径(部署时位于 /data 卷) */
   readonly dataFile: string;
@@ -66,6 +87,10 @@ export interface LocalLibraryServiceOptions {
   readonly maxEntries?: number;
   /** 音频元数据解析函数;默认为 music-metadata 的 parseFile(测试可注入) */
   readonly parseAudio?: ParseAudioFile;
+  /** 浏览根候选列表;默认探测 fnOS 卷约定路径 /vol1../vol9(测试可注入) */
+  readonly browseRootsProbe?: readonly string[];
+  /** 目录可访问性探测函数;默认 fs.access(path, R_OK|X_OK)(测试可注入以模拟不可读子目录) */
+  readonly probePathAccess?: ProbePathAccess;
 }
 
 export interface LocalLibraryService {
@@ -82,6 +107,10 @@ export interface LocalLibraryService {
   removeEntry(id: string): Promise<LibraryState>;
   /** 按匹配规则从歌单中剔除本地已有的重复曲目 */
   filterDuplicates(playlist: Playlist): { playlist: Playlist; excluded: number };
+  /** 探测可用的浏览根目录(存在、是目录且可读),按名称排序;一个都没有时返回空数组 */
+  browseRoots(): Promise<string[]>;
+  /** 浏览目录:返回可直接进入的可读子目录列表;纯只读操作,不会把路径加入 roots */
+  browseDir(path: string): Promise<BrowseDirResult>;
   /** 等待所有后台扫描结束(用于测试与优雅停机) */
   whenIdle(): Promise<void>;
 }
@@ -101,6 +130,13 @@ const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.m4a', '.ogg', '.opus', '.wa
 const DEFAULT_MAX_ENTRIES = 50_000;
 const SHORT_ID_LENGTH = 16;
 const EDITABLE_FIELDS = new Set(['title', 'artists', 'album']);
+
+/** fnOS 卷约定路径的探测上限:/vol1../vol9 */
+const BROWSE_VOL_MAX = 9;
+const DEFAULT_BROWSE_ROOTS: readonly string[] =
+  Array.from({ length: BROWSE_VOL_MAX }, (_, index) => `/vol${index + 1}`);
+/** 判定目录"可进入"的访问位:可读 + 可执行(进入目录需要 X 位) */
+const BROWSE_ACCESS_MODE = fsConstants.R_OK | fsConstants.X_OK;
 
 interface PersistedLibrary {
   roots: LibraryRoot[];
@@ -207,6 +243,8 @@ class LocalLibraryServiceImpl implements LocalLibraryService {
   private readonly dataFile: string;
   private readonly maxEntries: number;
   private readonly parseAudio: ParseAudioFile;
+  private readonly browseRootsProbe: readonly string[];
+  private readonly probePathAccess: ProbePathAccess;
   private roots: LibraryRoot[] = [];
   private entries: LibraryEntry[] = [];
   private readonly truncatedRootIds = new Set<string>();
@@ -219,6 +257,8 @@ class LocalLibraryServiceImpl implements LocalLibraryService {
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
     this.parseAudio = options.parseAudio ?? (async (filePath, parseOptions) =>
       parseFile(filePath, { duration: parseOptions.duration }));
+    this.browseRootsProbe = options.browseRootsProbe ?? DEFAULT_BROWSE_ROOTS;
+    this.probePathAccess = options.probePathAccess ?? (candidate => access(candidate, BROWSE_ACCESS_MODE));
   }
 
   getState(): LibraryState {
@@ -342,6 +382,65 @@ class LocalLibraryServiceImpl implements LocalLibraryService {
     await this.persist();
     return this.getState();
     // 注意:磁盘文件并未删除,下次重扫(手动 rescanRoot 或服务启动自动重扫)会把它重新扫入。
+  }
+
+  async browseRoots(): Promise<string[]> {
+    const available: string[] = [];
+    for (const candidate of this.browseRootsProbe) {
+      if (await this.isReadableDir(candidate)) {
+        available.push(candidate);
+      }
+    }
+    return available.sort((a, b) => basename(a).localeCompare(basename(b), 'zh-Hans-CN'));
+  }
+
+  async browseDir(rawPath: string): Promise<BrowseDirResult> {
+    if (typeof rawPath !== 'string' || !isAbsolute(rawPath)) {
+      throw new LocalLibraryError(400, 'INVALID_REQUEST', '音乐库路径必须为绝对路径');
+    }
+    const absolutePath = resolve(rawPath);
+    if (!(await this.isReadableDir(absolutePath))) {
+      throw new LocalLibraryError(400, 'INVALID_REQUEST', '路径无效或无法访问');
+    }
+    let dirents;
+    try {
+      dirents = await readdir(absolutePath, { withFileTypes: true });
+    } catch {
+      // isReadableDir 已确认可读;此分支仅为兜底,不让浏览 500
+      throw new LocalLibraryError(400, 'INVALID_REQUEST', '路径无效或无法访问');
+    }
+    const dirs: BrowseEntry[] = [];
+    for (const dirent of dirents) {
+      if (dirent.name.startsWith('.')) continue; // 点开头隐藏目录
+      const childPath = join(absolutePath, dirent.name);
+      try {
+        const childStats = await stat(childPath);
+        if (!childStats.isDirectory()) continue; // 普通文件不出现在浏览结果中
+        await this.probePathAccess(childPath);
+      } catch {
+        continue; // 单个子目录已被删除/无权限等:跳过该项,不让整个浏览失败
+      }
+      dirs.push({ name: dirent.name, path: childPath });
+    }
+    dirs.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+    const parent = dirname(absolutePath);
+    return {
+      path: absolutePath,
+      parent: parent === absolutePath ? null : parent,
+      dirs,
+    };
+  }
+
+  /** 判定路径存在、是目录且可访问(R_OK|X_OK);任何一步异常都视为不可用 */
+  private async isReadableDir(candidate: string): Promise<boolean> {
+    try {
+      const stats = await stat(candidate);
+      if (!stats.isDirectory()) return false;
+      await this.probePathAccess(candidate);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   filterDuplicates(playlist: Playlist): { playlist: Playlist; excluded: number } {
@@ -567,6 +666,8 @@ const addRootBodySchema = z.object({ path: z.string() }).strict();
  *   POST   /api/local-library/roots/:id/rescan → 200 新状态 / 404 / 409
  *   PATCH  /api/local-library/entries/:id  patch → 200 更新后的条目 / 400 / 404
  *   DELETE /api/local-library/entries/:id  → 200 新状态 / 404
+ *   GET    /api/local-library/browse       不带 path → {browseRoots}(探测 /vol1../vol9)
+ *                                          ?path=<绝对路径> → {path, parent, dirs}(仅可读子目录)
  * 所有错误响应均为 {code, message}(中文),code ∈ INVALID_REQUEST | LOCAL_LIBRARY_ERROR。
  */
 export const createLocalLibraryRouter = <E extends Env = Env>(service: LocalLibraryService): Hono<E> => {
@@ -581,6 +682,16 @@ export const createLocalLibraryRouter = <E extends Env = Env>(service: LocalLibr
   };
 
   router.get('/', context => context.json(service.getState()));
+
+  router.get('/browse', async context => {
+    const requestedPath = context.req.query('path');
+    if (requestedPath === undefined || requestedPath.trim() === '') {
+      // 不带 path:返回探测到的浏览根目录(如 fnOS 的 /vol1../vol9);一个都没有时为空数组
+      return context.json({ browseRoots: await service.browseRoots() });
+    }
+    // 带 path:浏览该目录(纯只读,不会把路径加入 roots)
+    return context.json(await service.browseDir(requestedPath));
+  });
 
   router.put('/roots', async context => {
     const body = await readJsonBody(context);
