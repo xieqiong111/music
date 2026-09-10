@@ -14,3 +14,5 @@ data/
 playwright-report/
 test-results/
 *.local
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/resources/

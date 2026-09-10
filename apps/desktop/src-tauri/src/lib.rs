@@ -10,8 +10,17 @@
 // - 凭据安全存储（Windows Credential Manager / macOS Keychain / Android Keystore）同为后续
 //   任务（tauri-plugin-stronghold 或 Rust keyring 封装）；接入点即下方 Builder 插件链。
 
+#[cfg(all(windows, not(debug_assertions)))]
+mod backend;
+#[cfg(all(windows, not(debug_assertions)))]
+mod windows;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(windows, not(debug_assertions)))]
+    windows::run();
+
+    #[cfg(not(all(windows, not(debug_assertions))))]
     tauri::Builder::default()
         // 系统保存对话框插件（capability：dialog:allow-save，见 capabilities/default.json）
         .plugin(tauri_plugin_dialog::init())

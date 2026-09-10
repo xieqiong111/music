@@ -9,6 +9,8 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -23,11 +25,64 @@ jobs:
         run: pnpm test
       - name: Install stable Rust
         run: rustup update stable --no-self-update
+      - name: Cache Rust build
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: windows-desktop-rust-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml') }}
       - name: Build Windows installer
         run: pnpm --filter @playlist-exporter/desktop exec tauri build --bundles nsis
-      - name: Upload installer
+      - name: Verify bundled backend
+        run: node scripts/desktop-smoke.mjs
+      - name: Install package in test directory
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'apps/desktop/src-tauri/target/release/bundle/nsis/*.exe' | Select-Object -First 1
+          $installDir = Join-Path $env:RUNNER_TEMP 'playlist-installed'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          $exe = Join-Path $installDir 'playlist-exporter-desktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Installed executable is missing' }
+          "DESKTOP_EXE=$exe" >> $env:GITHUB_ENV
+      - name: Verify installed desktop UI and shutdown
+        run: node scripts/desktop-ui-smoke.mjs "$env:DESKTOP_EXE"
+      - name: Prepare release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-files | Out-Null
+          Copy-Item 'apps/desktop/src-tauri/target/release/bundle/nsis/*.exe' release-files/
+          Copy-Item 'apps/desktop/src-tauri/Cargo.lock' release-files/
+          Copy-Item 'apps/desktop/WINDOWS.md' release-files/
+          Get-ChildItem 'release-files/*.exe' | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content -Encoding utf8 'release-files/SHA256SUMS.txt'
+      - name: Upload verified installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: playlist-exporter-windows-x64
-          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: release-files/*
           if-no-files-found: error
+      - name: Upload desktop verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-verification
+          path: desktop-smoke-results/
+          if-no-files-found: ignore
+      - name: Publish verified Windows release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        shell: pwsh
+        run: |
+          $tag = "v0.1.0-windows.$env:BUILD_NUMBER"
+          $assets = Get-ChildItem release-files -File | Select-Object -ExpandProperty FullName
+          gh release create $tag @assets --target $env:BUILD_SHA --title "Playlist Exporter 0.1.0 - Windows x64" --notes-file apps/desktop/WINDOWS.md
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed' }
+

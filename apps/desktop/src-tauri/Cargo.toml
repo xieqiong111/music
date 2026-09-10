@@ -45,6 +45,9 @@ tauri-plugin-dialog = "2"
 # serde = { version = "1", features = ["derive"] }
 # serde_json = "1"
 
+[target.'cfg(windows)'.dependencies]
+tauri-plugin-single-instance = "2"
+
 [profile.release]
 # 体积优先的发布优化。前提：本 Cargo.toml 是其所在 cargo workspace 的根清单——
 # 当前 pnpm monorepo 无根 Cargo.toml，src-tauri 即独立 package，本节生效；
