@@ -132,3 +132,10 @@
 - 迭代记录:①tauri android build 的 --target 用短名 aarch64;②APK 产物路径含 universal flavor 层级(glob 用 **)
 - 所有新 action SHA 经 GitHub API 核对(setup-java v5、setup-android v3);产物不做签名、不创建 Release,下载于 run artifacts
 - macOS ARM 包在 Intel Mac 上需 Rosetta 2;Android 仅 aarch64(armv7/x86_64 可按需在 --target 增列)
+
+## Release 发布回填(2026-09-12)
+
+- GitHub Release `v0.1.0`(prerelease):三平台安装包 4 个资产已上传并经匿名访问验证(总 ~142 MB)
+  - Windows:NSIS setup.exe + MSI;macOS:aarch64 DMG;Android:aarch64 debug APK
+  - 资产由 CI run 34629121676 与本机 Windows 构建产出,发布说明含签名警告与安装指引
+- 源码 tag v0.1.0 指向 main(428f734 之后);发布不改变任何源码
