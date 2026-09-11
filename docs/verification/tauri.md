@@ -122,3 +122,13 @@
 - 冒烟:release exe 启动后进程存活、窗口 "Playlist Exporter" 出现、WebView2 子进程存在,Stop-Process 干净退出
 - 说明:二进制未签名(SmartScreen 会提示,后续任务);图标仍为占位;`target/`、`gen/` 已加入 .gitignore,Cargo.lock 已按应用惯例提交
 - 桌面形态语义:静态打包 web dist,本地导入/导出离线可用;服务不可达时认证门按 fail-open 放行(为桌面壳设计的既定行为);联网歌单分析仍需指向 NAS 服务端
+
+## CI 全平台打包回填(2026-09-12,GitHub Actions)
+
+`release.yml`(workflow_dispatch)三 job 全绿(run 34629121676):
+- **macOS**(macos-latest):`desktop-macos-dmg` → `Playlist Exporter_0.1.0_aarch64.dmg`(1.5 MB,Apple Silicon 原生,ad-hoc 签名)
+- **Windows**(windows-latest):`desktop-windows-bundles` → NSIS setup.exe(1.2 MB)+ MSI(1.7 MB),与本地构建互相印证
+- **Android**(ubuntu-latest):`desktop-android-apk` → `app-universal-debug.apk`(137.8 MB,aarch64,debug 签名可直接安装)
+- 迭代记录:①tauri android build 的 --target 用短名 aarch64;②APK 产物路径含 universal flavor 层级(glob 用 **)
+- 所有新 action SHA 经 GitHub API 核对(setup-java v5、setup-android v3);产物不做签名、不创建 Release,下载于 run artifacts
+- macOS ARM 包在 Intel Mac 上需 Rosetta 2;Android 仅 aarch64(armv7/x86_64 可按需在 --target 增列)
