@@ -108,3 +108,17 @@
    （撰写环境无仓库实体，未能读取其配置）。
 5. 占位图标未经打包实测；如 bundler 对占位 ICO/ICNS 挑剔，以 `tauri icon` 生成品为准。
 6. MSVC arm64 交叉编译、macOS universal lipo 均为社区常规路径，但本阶段未验证。
+
+## 实机构建回填(2026-09-12,Windows)
+
+前置:winget 安装 rustup(stable-x86_64-pc-windows-msvc,rustc 1.98.1);VS 2022 Community 已含 MSVC C++ 组件;构建期经本地代理(127.0.0.1:7899)下载 crates 与 NSIS/WiX(github 直连被重置)。
+
+- 命令:`pnpm build`(apps/desktop,即 tauri build;beforeBuildCommand 自动产出 web dist)
+- 结果:exit 0,构建日志零警告零错误;增量重建约 3 分钟(首次全量约 5-8 分钟)
+- 产物:
+  - `apps/desktop/src-tauri/target/release/playlist-exporter-desktop.exe`(3.11 MB)
+  - `.../bundle/nsis/Playlist Exporter_0.1.0_x64-setup.exe`(1.15 MB)
+  - `.../bundle/msi/Playlist Exporter_0.1.0_x64_en-US.msi`(1.63 MB)
+- 冒烟:release exe 启动后进程存活、窗口 "Playlist Exporter" 出现、WebView2 子进程存在,Stop-Process 干净退出
+- 说明:二进制未签名(SmartScreen 会提示,后续任务);图标仍为占位;`target/`、`gen/` 已加入 .gitignore,Cargo.lock 已按应用惯例提交
+- 桌面形态语义:静态打包 web dist,本地导入/导出离线可用;服务不可达时认证门按 fail-open 放行(为桌面壳设计的既定行为);联网歌单分析仍需指向 NAS 服务端
