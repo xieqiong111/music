@@ -14,3 +14,7 @@ data/
 playwright-report/
 test-results/
 *.local
+
+# Tauri 桌面端构建产物
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
