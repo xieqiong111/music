@@ -132,7 +132,7 @@ jobs:
         run: pnpm --filter @playlist-exporter/desktop exec tauri android init
 
       - name: Build Android debug APK (aarch64, debug-signed)
-        run: pnpm --filter @playlist-exporter/desktop exec tauri android build --apk --debug --target aarch64-linux-android
+        run: pnpm --filter @playlist-exporter/desktop exec tauri android build --apk --debug --target aarch64
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
