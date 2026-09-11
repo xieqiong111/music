@@ -146,6 +146,45 @@ interface PersistedLibrary {
 
 const normalizeText = (value: string): string => value.trim().toLowerCase().replace(/\s+/gu, ' ');
 
+/**
+ * 字符串形态歌手名的分隔符:英文/全角分号、斜杠、顿号、英文/全角逗号、& 与全角＆、
+ * feat./ft.(大小写不敏感,允许前后空格)。
+ *
+ * - 歌名中可能出现 "/" 等字符,但 artist 标签里出现通常就是分隔,故不针对字段做区分;
+ * - 已知取舍:个别艺人名中确有 "&"(如 "Simon & Garfunkel"),按分隔符处理会误拆,
+ *   但多歌手整串用 "&" 连接的场景更常见、对"排除本地已有歌曲"的匹配收益更大,
+ *   因此仍把 "&" 作为分隔符(测试中固化了该取舍);
+ * - feat./ft. 前置 Unicode 字母/数字负向断言,避免误拆 "left." 这类内含 "ft." 的词。
+ */
+const ARTIST_SEPARATOR_PATTERN =
+  /\s*(?:;|；|\/|、|,|，|&|＆|(?<![\p{L}\p{N}])feat\.|(?<![\p{L}\p{N}])ft\.)\s*/giu;
+
+/**
+ * 把字符串形态的多歌手标签拆成歌手数组并去重。
+ *
+ * 本地文件标签的多歌手常见写法是单个整串("Aqu3ra;早見沙織"、"歌手A/歌手B" 等),
+ * 而歌单曲目(网易云/QQ)的 artists 是已拆开的数组;不拆分会导致导出勾选
+ * "排除本地音乐库已有的歌曲"时 artists 集合无交集而匹配不上。
+ * music-metadata 的 artists 数组元素本身也可能仍是含分隔符的整串,
+ * 故对每个元素统一拆分;真正已拆开的元素不含分隔符,拆分对其是无操作。
+ * 拆分后逐段 trim、去空,并按大小写不敏感去重(保留首个出现的原始大小写)。
+ */
+const splitArtistStrings = (artists: readonly string[]): string[] => {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const artist of artists) {
+    for (const part of artist.split(ARTIST_SEPARATOR_PATTERN)) {
+      const trimmed = part.trim();
+      if (trimmed === '') continue;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(trimmed);
+    }
+  }
+  return result;
+};
+
 const shortPathId = (absolutePath: string): string =>
   createHash('sha256').update(absolutePath).digest('hex').slice(0, SHORT_ID_LENGTH);
 
@@ -596,7 +635,7 @@ class LocalLibraryServiceImpl implements LocalLibraryService {
         : typeof common.artist === 'string' ? [common.artist] : [])
         .filter((artist): artist is string => typeof artist === 'string' && artist.trim() !== '');
       if (parsedArtists.length > 0) {
-        artists = parsedArtists;
+        artists = splitArtistStrings(parsedArtists);
       }
       if (typeof common.album === 'string' && common.album.trim() !== '') {
         album = common.album;

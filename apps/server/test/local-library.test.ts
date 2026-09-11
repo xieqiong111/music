@@ -320,6 +320,52 @@ describe('local library service', () => {
     }
   });
 
+  it('扫描时把字符串形态的多歌手标签按常见分隔符拆分', async () => {
+    const musicDir = musicDirOf();
+    mkdirSync(musicDir, { recursive: true });
+    // 注:多歌手整串用 FLAC(Vorbis Comment 为 UTF-8);mp3 辅助函数按 latin1 编码,写非拉丁字符会乱码
+    writeTaggedFlac(musicDir, 'duo.flac', { title: 'Duo Song', artist: 'Aqu3ra;早見沙織', album: null });
+    writeTaggedFlac(musicDir, 'mixed.flac', {
+      title: 'Mixed Song',
+      artist: '歌手A/歌手B、歌手C,歌手D & 歌手E feat. 歌手F',
+      album: null,
+    });
+
+    const service = await createService();
+    const state = await seedLibrary(service, musicDir);
+
+    expect(findEntryByTitle(state, 'Duo Song').artists).toEqual(['Aqu3ra', '早見沙織']);
+    expect(findEntryByTitle(state, 'Mixed Song').artists).toEqual([
+      '歌手A', '歌手B', '歌手C', '歌手D', '歌手E', '歌手F',
+    ]);
+  });
+
+  it('单一歌手(无分隔符)不拆分;艺人名含 & 时按既定取舍仍作为分隔符', async () => {
+    const musicDir = musicDirOf();
+    mkdirSync(musicDir, { recursive: true });
+    writeTaggedFlac(musicDir, 'single.flac', { title: 'Single Song', artist: 'Jay Chou', album: null });
+    writeTaggedFlac(musicDir, 'amp.flac', { title: 'Amp Song', artist: 'Simon & Garfunkel', album: null });
+
+    const service = await createService();
+    const state = await seedLibrary(service, musicDir);
+
+    expect(findEntryByTitle(state, 'Single Song').artists).toEqual(['Jay Chou']);
+    // 已知取舍:个别艺人名(如 Simon & Garfunkel)中的 & 会被当作分隔符误拆,见 splitArtistStrings 注释
+    expect(findEntryByTitle(state, 'Amp Song').artists).toEqual(['Simon', 'Garfunkel']);
+  });
+
+  it('拆分时清理分隔符前后空格与空段,并按大小写不敏感去重(保留原大小写)', async () => {
+    const musicDir = musicDirOf();
+    mkdirSync(musicDir, { recursive: true });
+    // "C c" 与 ";" 之间是一个全角空格(U+3000),末尾还有一个大小写不同的重复 "A"
+    writeTaggedFlac(musicDir, 'messy.flac', { title: 'Messy Song', artist: 'A;;  B , C c　;  A ', album: null });
+
+    const service = await createService();
+    const state = await seedLibrary(service, musicDir);
+
+    expect(findEntryByTitle(state, 'Messy Song').artists).toEqual(['A', 'B', 'C c']);
+  });
+
   it('跳过符号链接目录,避免循环扫描', async ({ skip }) => {
     if (process.platform === 'win32') {
       skip(); // Windows 普通权限无法创建符号链接
@@ -564,6 +610,21 @@ describe('local library service', () => {
     await seedLibrary(service);
     const result = service.filterDuplicates(makePlaylist([
       track(0, '  NIGHT   dance ', ['DJ TEST']),
+    ]));
+    expect(result.excluded).toBe(1);
+    expect(result.playlist.tracks).toHaveLength(0);
+  });
+
+  it('filterDuplicates:库中"多歌手整串"标签与歌单拆分后的 artists 现在能命中剔除', async () => {
+    const musicDir = musicDirOf();
+    mkdirSync(musicDir, { recursive: true });
+    // 库中文件标签是单个整串("Aqu3ra;早見沙織"),歌单曲目的 artists 是拆开的数组(网易云/QQ 形态)
+    writeTaggedFlac(musicDir, 'duet.flac', { title: 'Duet', artist: 'Aqu3ra;早見沙織', album: null });
+
+    const service = await createService();
+    await seedLibrary(service, musicDir);
+    const result = service.filterDuplicates(makePlaylist([
+      track(0, 'Duet', ['Aqu3ra', '早見沙織']),
     ]));
     expect(result.excluded).toBe(1);
     expect(result.playlist.tracks).toHaveLength(0);
