@@ -349,3 +349,21 @@ th { font-size: 0.78rem; letter-spacing: 0.08em; }
 @media (prefers-reduced-motion: no-preference) {
   button, input, select { transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease; }
 }
+
+.local-mode-badge {
+  padding: 6px 14px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 999px;
+  font-size: 13px;
+  color: #6b6b6b;
+}
+
+.offline-banner {
+  margin: 12px 0 0;
+  padding: 10px 16px;
+  border: 1px solid #e0b25e;
+  border-radius: 8px;
+  background: #fdf3e0;
+  color: #7a5410;
+  font-size: 14px;
+}

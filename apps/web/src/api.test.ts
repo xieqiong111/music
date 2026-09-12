@@ -34,6 +34,30 @@ describe('HttpPlaylistService', () => {
     expect(sessionStorage).toHaveLength(0);
   });
 
+  it('converts non-JSON 200 responses into a structured error instead of a syntax error', async () => {
+    const fetchImpl = recordedFetch(async () => new Response('<!DOCTYPE html><html></html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    }));
+    const service = new HttpPlaylistService({ fetchImpl });
+    await expect(service.getAuthStatus()).rejects.toMatchObject({
+      code: 'INVALID_SERVER_RESPONSE',
+      message: '服务返回了无法识别的数据',
+    });
+  });
+
+  it('includes the http status when an error body is not json', async () => {
+    const fetchImpl = recordedFetch(async () => new Response('<h1>404</h1>', {
+      status: 404,
+      headers: { 'content-type': 'text/html' },
+    }));
+    const service = new HttpPlaylistService({ fetchImpl });
+    await expect(service.getAuthStatus()).rejects.toMatchObject({
+      code: 'HTTP_ERROR',
+      message: '服务暂时不可用(HTTP 404)',
+    });
+  });
+
   it('rejects malformed inspection responses at the client boundary', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       jobId: 'job-1',

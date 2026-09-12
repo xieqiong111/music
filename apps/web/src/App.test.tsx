@@ -130,6 +130,18 @@ const service = (overrides: Partial<PlaylistService> = {}): PlaylistService => (
 });
 
 describe('App', () => {
+  it('falls back to an honest local mode when the initial auth probe fails', async () => {
+    const mockService = service();
+    mockService.getAuthStatus = vi.fn(async () => {
+      throw new SyntaxError('Unexpected token '<', "<!DOCTYPE html>" is not valid JSON');
+    });
+    render(<App service={mockService} />);
+    expect(await screen.findByText('本地模式（未连接服务端）')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('未连接服务端：联网歌单分析');
+    expect(screen.queryByText('admin')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '歌单导出' })).toBeInTheDocument();
+  });
+
   it('cancels an online job when switching to a local import', async () => {
     const mockService = service({ getJob: vi.fn(() => new Promise<JobSnapshot>(() => undefined)) });
     const user = userEvent.setup();

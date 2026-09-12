@@ -85,6 +85,8 @@ export const zhCN = {
   loggingIn: '正在登录…',
   loginFailed: '登录失败，请稍后重试',
   sessionExpired: '会话已过期，请重新登录',
+  localModeBadge: '本地模式（未连接服务端）',
+  offlineBanner: '未连接服务端：联网歌单分析与本地音乐库不可用；本地导入/导出与文件解析不受影响。如需联网分析，请访问已部署的服务端网页版。',
   tabExport: '歌单导出',
   tabLibrary: '本地音乐库',
   viewSwitchLabel: '视图切换',

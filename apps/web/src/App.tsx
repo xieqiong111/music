@@ -25,6 +25,9 @@ export default function App({
   const [username, setUsername] = useState<string>();
   const [sessionNotice, setSessionNotice] = useState<string>();
   const [view, setView] = useState<MainView>('export');
+  // 初始会话探测失败(服务不可达、桌面壳无服务端等)时的降级标记:
+  // 放行进入主界面,但明确显示"本地模式"而不是伪造"已登录"。
+  const [serverUnreachable, setServerUnreachable] = useState(false);
 
   const playlistService = useMemo(
     () => injectedService ?? new HttpPlaylistService({
@@ -48,7 +51,9 @@ export default function App({
         }
       })
       .catch(() => {
-        if (!cancelled) setAuthState('authenticated');
+        if (cancelled) return;
+        setServerUnreachable(true);
+        setAuthState('authenticated');
       });
     return () => {
       cancelled = true;
@@ -119,14 +124,22 @@ export default function App({
             {zhCN.tabLibrary}
           </button>
         </nav>
-        <UserMenu
-          onCredentialsChanged={nextUsername => setUsername(nextUsername)}
-          onLogout={() => void handleLogout()}
-          onSessionExpired={handleSessionExpired}
-          service={playlistService}
-          username={username}
-        />
+        {serverUnreachable ? (
+          <span className="local-mode-badge" role="status">{zhCN.localModeBadge}</span>
+        ) : (
+          <UserMenu
+            onCredentialsChanged={nextUsername => setUsername(nextUsername)}
+            onLogout={() => void handleLogout()}
+            onSessionExpired={handleSessionExpired}
+            service={playlistService}
+            username={username}
+          />
+        )}
       </div>
+
+      {serverUnreachable && (
+        <p className="offline-banner" role="alert">{zhCN.offlineBanner}</p>
+      )}
 
       {view === 'export' ? (
         <>

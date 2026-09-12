@@ -355,7 +355,11 @@ const structuredError = async (response: Response): Promise<ApiError> => {
   try {
     parsed = await response.json();
   } catch {
-    return new ApiError({ code: 'HTTP_ERROR', message: '服务暂时不可用' });
+    // 响应体不是 JSON(如桌面壳对缺失路径返回的 HTML)。
+    return new ApiError({
+      code: 'HTTP_ERROR',
+      message: `服务暂时不可用(HTTP ${response.status})`,
+    });
   }
   if (typeof parsed === 'object' && parsed !== null &&
       typeof (parsed as Record<string, unknown>).code === 'string' &&
@@ -369,7 +373,10 @@ const structuredError = async (response: Response): Promise<ApiError> => {
         : {}),
     });
   }
-  return new ApiError({ code: 'HTTP_ERROR', message: '服务暂时不可用' });
+  return new ApiError({
+    code: 'HTTP_ERROR',
+    message: `服务暂时不可用(HTTP ${response.status})`,
+  });
 };
 
 const excludedLocalCountFrom = (header: string | null): number | undefined => {
@@ -404,7 +411,17 @@ export class HttpPlaylistService implements PlaylistService {
 
   async #json<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await this.#request(path, init);
-    return response.json() as Promise<T>;
+    // 非 JSON 响应(如桌面壳对缺失的 /api 路径返回的 HTML)一律转成结构化
+    // 错误,绝不让 SyntaxError("Unexpected token '<'")裸抛到界面。
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!/application\/json/i.test(contentType)) {
+      throw invalidServerResponse();
+    }
+    try {
+      return await response.json() as Promise<T>;
+    } catch {
+      throw invalidServerResponse();
+    }
   }
 
   createInspection(provider: ProviderId, input: string) {
