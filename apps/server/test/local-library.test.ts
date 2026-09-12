@@ -372,6 +372,8 @@ describe('local library service', () => {
       return;
     }
     const musicDir = musicDirOf();
+    // POSIX 上 symlink 的目标父目录必须存在,先建 music/ 再挂链接
+    mkdirSync(musicDir, { recursive: true });
     const realDir = join(workspace, 'real');
     mkdirSync(realDir, { recursive: true });
     writeTaggedMp3(realDir, 'Real.mp3', { title: 'Real Song', artist: 'A', album: 'B' });
