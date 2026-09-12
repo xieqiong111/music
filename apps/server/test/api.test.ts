@@ -67,6 +67,51 @@ const noNetwork: HttpTransport = {
   async request() { throw new Error('real network disabled in API test'); },
 };
 
+// 曲目指纹排除(excludeTrackKeys)专用歌单:原始值刻意包含大小写/多余空格/
+// 乱序歌手与空歌手列表,用于验证服务端按冻结公式归一化后命中。
+const fingerprintPlaylist: Playlist = {
+  id: '42',
+  name: '指纹排除歌单',
+  source: 'netease',
+  total: 4,
+  tracks: [
+    {
+      title: 'Starlight',
+      artists: ['Aimer'],
+      source: 'netease',
+      availability: 'available',
+      position: 0,
+      warnings: [],
+    },
+    {
+      title: '  Night  RUN  ',
+      artists: ['B', 'A'],
+      source: 'netease',
+      availability: 'available',
+      position: 1,
+      warnings: [],
+    },
+    {
+      title: '孤勇者',
+      artists: ['陈奕迅'],
+      source: 'netease',
+      availability: 'available',
+      position: 2,
+      warnings: [],
+    },
+    {
+      title: 'NoArtist',
+      artists: [],
+      source: 'netease',
+      availability: 'available',
+      position: 3,
+      warnings: [],
+    },
+  ],
+  complete: true,
+  warnings: [],
+};
+
 const flush = async (): Promise<void> => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 };
@@ -133,6 +178,28 @@ const loginCookie = async (
   const cookie = response.headers.get('set-cookie')?.split(';', 1)[0] ?? '';
   expect(cookie.startsWith('pe_session=')).toBe(true);
   return cookie;
+};
+
+// 建立"已完成任务 = fingerprintPlaylist"的夹具,并返回带会话 Cookie 的导出函数。
+const fingerprintFixture = async (
+  fixtureOptions: { filterLocalDuplicates?: LocalDuplicateFilter } = {},
+) => {
+  const { app, jobs } = createFixture({
+    provider: provider(vi.fn(async () => fingerprintPlaylist)),
+    ...fixtureOptions,
+  });
+  const cookie = await loginCookie(app);
+  await app.request('/api/playlists/inspect', {
+    method: 'POST', headers: jsonHeaders({ cookie }),
+    body: JSON.stringify({ provider: 'netease', input: { value: '42' } }),
+  });
+  await flush();
+  const exportOptions = async (options: Record<string, unknown>): Promise<Response> =>
+    app.request('/api/exports', {
+      method: 'POST', headers: jsonHeaders({ cookie }),
+      body: JSON.stringify({ jobId: 'job-1', options }),
+    });
+  return { app, jobs, exportOptions };
 };
 
 describe('local NAS API', () => {
@@ -586,6 +653,144 @@ describe('local NAS API', () => {
     for (const event of logs) {
       expect(Object.keys(event).sort()).toEqual(['requestId', 'status']);
     }
+    jobs.close();
+  });
+
+  it('excludes tracks matching excludeTrackKeys fingerprints and reranks positions and total', async () => {
+    const { jobs, exportOptions } = await fingerprintFixture();
+    const response = await exportOptions({
+      format: 'json',
+      date: '2026-09-04',
+      generatedAt: '2026-09-04T00:00:00.000Z',
+      excludeTrackKeys: ['t|starlight|aimer'],
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-excluded-track-count')).toBe('1');
+    expect(response.headers.get('x-track-count')).toBe('3');
+    const envelope = await response.json();
+    expect(envelope.exportedTrackCount).toBe(3);
+    expect(envelope.playlist.total).toBe(3);
+    expect(envelope.playlist.complete).toBe(true);
+    expect(envelope.playlist.tracks.map((t: { title: string; position: number }) => [t.title, t.position]))
+      .toEqual([
+        ['  Night  RUN  ', 0],
+        ['孤勇者', 1],
+        ['NoArtist', 2],
+      ]);
+    expect(envelope.playlist.warnings).toContain('已按本机音乐库排除 1 首重复曲目');
+    jobs.close();
+  });
+
+  it('hits keys after normalize (case/spacing/artist order) and misses non-normalized keys', async () => {
+    const { jobs, exportOptions } = await fingerprintFixture();
+    // 曲目原始值 '  Night  RUN  '/['B','A'];按冻结公式归一化(含歌手排序)后命中。
+    const normalized = await exportOptions({
+      format: 'json',
+      excludeTrackKeys: ['t|night run|a;b'],
+    });
+    expect(normalized.status).toBe(200);
+    expect(normalized.headers.get('x-excluded-track-count')).toBe('1');
+    const envelope = await normalized.json();
+    expect(envelope.tracks.map((t: { title: string }) => t.title))
+      .toEqual(['Starlight', '孤勇者', 'NoArtist']);
+
+    // 服务端不归一化 key 本身:未按冻结公式归一化的 key(大小写/空格/歌手顺序原样)不命中。
+    const raw = await exportOptions({
+      format: 'json',
+      excludeTrackKeys: ['t|  Night  RUN  |B;A'],
+    });
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get('x-excluded-track-count')).toBe('0');
+    expect((await raw.json()).exportedTrackCount).toBe(4);
+    jobs.close();
+  });
+
+  it('matches the empty-artists fingerprint t|title|', async () => {
+    const { jobs, exportOptions } = await fingerprintFixture();
+    const response = await exportOptions({ format: 'json', excludeTrackKeys: ['t|noartist|'] });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-excluded-track-count')).toBe('1');
+    const envelope = await response.json();
+    expect(envelope.tracks.map((t: { title: string }) => t.title))
+      .toEqual(['Starlight', '  Night  RUN  ', '孤勇者']);
+    jobs.close();
+  });
+
+  it('rejects invalid excludeTrackKeys with 400 INVALID_EXPORT_OPTIONS', async () => {
+    const { jobs, exportOptions } = await fingerprintFixture();
+    for (const keys of [
+      [''], // 空字符串项
+      ['k'.repeat(201)], // 超过 200 字符
+      Array.from({ length: 5001 }, (_, index) => `k${index}`), // 超过 5000 项
+    ]) {
+      const response = await exportOptions({ format: 'txt', excludeTrackKeys: keys });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: 'INVALID_EXPORT_OPTIONS',
+        message: expect.stringContaining('排除曲目指纹'),
+      });
+    }
+
+    // 边界:恰好 200 字符 / 恰好 5000 项 / 空数组均合法;选项存在即便剔除 0 首也输出头。
+    const boundary200 = await exportOptions({
+      format: 'txt',
+      excludeTrackKeys: [`t|${'a'.repeat(197)}`],
+    });
+    expect(boundary200.status).toBe(200);
+    expect(boundary200.headers.get('x-excluded-track-count')).toBe('0');
+    const boundary5000 = await exportOptions({
+      format: 'txt',
+      excludeTrackKeys: Array.from({ length: 5000 }, (_, index) => `k${index}`),
+    });
+    expect(boundary5000.status).toBe(200);
+    expect(boundary5000.headers.get('x-excluded-track-count')).toBe('0');
+    jobs.close();
+  });
+
+  it('applies excludeLocalDuplicates and excludeTrackKeys as a union with independent counts', async () => {
+    const duplicateFilter = vi.fn((playlist: Playlist) => {
+      const kept = playlist.tracks.filter(track => track.title !== '孤勇者');
+      return {
+        playlist: {
+          ...playlist,
+          total: kept.length,
+          tracks: kept.map((track, position) => ({ ...track, position })),
+          warnings: [
+            ...playlist.warnings,
+            `已按本地音乐库排除 ${playlist.tracks.length - kept.length} 首重复曲目`,
+          ],
+        },
+        excluded: playlist.tracks.length - kept.length,
+      };
+    });
+    const { jobs, exportOptions } = await fingerprintFixture({ filterLocalDuplicates: duplicateFilter });
+    const response = await exportOptions({
+      format: 'json',
+      excludeLocalDuplicates: true,
+      excludeTrackKeys: ['t|noartist|'],
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-excluded-local-count')).toBe('1');
+    expect(response.headers.get('x-excluded-track-count')).toBe('1');
+    expect(response.headers.get('x-track-count')).toBe('2');
+    const envelope = await response.json();
+    expect(envelope.exportedTrackCount).toBe(2);
+    expect(envelope.playlist.total).toBe(2);
+    expect(envelope.playlist.complete).toBe(true);
+    expect(envelope.tracks.map((t: { title: string }) => t.title))
+      .toEqual(['Starlight', '  Night  RUN  ']);
+    expect(envelope.playlist.warnings).toContain('已按本地音乐库排除 1 首重复曲目');
+    expect(envelope.playlist.warnings).toContain('已按本机音乐库排除 1 首重复曲目');
+    jobs.close();
+  });
+
+  it('keeps current behavior when excludeTrackKeys is absent (no header, unfiltered output)', async () => {
+    const { jobs, exportOptions } = await fingerprintFixture();
+    const response = await exportOptions({ format: 'txt', date: '2026-09-04' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-excluded-track-count')).toBeNull();
+    expect(new TextDecoder('utf-8', { fatal: true }).decode(await response.arrayBuffer()))
+      .toBe('Starlight - Aimer\n  Night  RUN   - B、A\n孤勇者 - 陈奕迅\nNoArtist - [unknown artist]\n');
     jobs.close();
   });
 });

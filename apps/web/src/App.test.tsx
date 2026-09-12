@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Playlist } from '@playlist-exporter/contracts';
 import App from './App.js';
 import { ApiError, type JobSnapshot, type LibraryEntryPatch, type LocalLibraryEntry, type LocalLibraryState, type PlaylistService } from './api.js';
+import { createClientLibrary, createMemoryStorage, type ClientLibrary, type DirectoryLikeHandle } from './localLibraryClient.js';
 
 vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
 afterEach(cleanup);
@@ -133,7 +134,7 @@ describe('App', () => {
   it('falls back to an honest local mode when the initial auth probe fails', async () => {
     const mockService = service();
     mockService.getAuthStatus = vi.fn(async () => {
-      throw new SyntaxError('Unexpected token '<', "<!DOCTYPE html>" is not valid JSON');
+      throw new SyntaxError("Unexpected token '<', \"<!DOCTYPE html>\" is not valid JSON");
     });
     render(<App service={mockService} />);
     expect(await screen.findByText('本地模式（未连接服务端）')).toBeInTheDocument();
@@ -582,5 +583,183 @@ describe('App', () => {
     expect(await screen.findByText('正在扫描音乐文件，已扫描 5 个…')).toBeInTheDocument();
     // 轮询持续刷新，短间隔下应产生多次刷新调用
     await waitFor(() => expect(getLocalLibrary.mock.calls.length).toBeGreaterThanOrEqual(4));
+  });
+});
+
+describe('App 桌面模式与本机音乐库', () => {
+  afterEach(() => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+  });
+
+  const enableDesktopShell = (): void => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+  };
+
+  const audioFile = (name: string): DirectoryLikeHandle => {
+    const file = new File(['x'], name);
+    return { kind: 'file', name, getFile: async () => file };
+  };
+
+  const clientLibraryWith = async (
+    specs: ReadonlyArray<{
+      readonly title?: string;
+      readonly artists?: readonly string[];
+      readonly album?: string | null;
+    }>,
+  ): Promise<ClientLibrary> => {
+    const children = specs.map((_spec, index) => audioFile(`song${index}.mp3`));
+    const root: DirectoryLikeHandle = {
+      kind: 'directory',
+      name: 'Music',
+      async *entries() {
+        for (const child of children) yield [child.name, child] as const;
+      },
+    };
+    const client = createClientLibrary({
+      storage: createMemoryStorage(),
+      directoryPicker: async () => root,
+      parseTags: async (_file, name) => {
+        const index = Number(/song(\d+)/u.exec(name)?.[1] ?? 0);
+        const spec = specs[index] ?? {};
+        return {
+          ...(spec.title === undefined ? {} : { title: spec.title }),
+          ...(spec.artists === undefined ? {} : { artists: spec.artists }),
+          ...(spec.album === undefined ? {} : { album: spec.album }),
+        };
+      },
+    });
+    await client.pickAndScanDirectory();
+    return client;
+  };
+
+  it('desktop shell skips the auth probe, makes zero fetch calls, and shows the local-mode badge', async () => {
+    enableDesktopShell();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      render(<App />);
+      // 不经过"正在检查登录状态",直接进入主界面
+      expect(await screen.findByLabelText('歌单链接或 ID')).toBeInTheDocument();
+      expect(screen.getByText('本地模式（未连接服务端）')).toBeInTheDocument();
+      expect(screen.getByText('桌面版联网分析需连接服务端（如 NAS 网页版）；本机音乐库与本地导入/导出不受影响。')).toBeInTheDocument();
+      expect(screen.queryByText('admin')).not.toBeInTheDocument();
+      // 联网分析入口整体禁用(本地导入不受影响)
+      expect(screen.getByRole('button', { name: /网易云音乐/ })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '读取歌单' })).toBeDisabled();
+      expect(screen.getByLabelText('选择播放列表文件')).toBeEnabled();
+      // 静态壳不允许出现任何 /api 请求
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('desktop shell never probes the injected service either', async () => {
+    enableDesktopShell();
+    const mockService = service();
+    render(<App clientLibrary={createClientLibrary({ storage: createMemoryStorage() })} service={mockService} />);
+
+    await screen.findByLabelText('歌单链接或 ID');
+    expect(mockService.getAuthStatus).not.toHaveBeenCalled();
+    expect(screen.getByText('本地模式（未连接服务端）')).toBeInTheDocument();
+  });
+
+  it('desktop library view shows only the on-device library: pick, scan, edit, delete', async () => {
+    enableDesktopShell();
+    const children = [audioFile('one.mp3'), audioFile('two.flac')];
+    const root: DirectoryLikeHandle = {
+      kind: 'directory',
+      name: 'Music',
+      async *entries() {
+        for (const child of children) yield [child.name, child] as const;
+      },
+    };
+    const client = createClientLibrary({
+      storage: createMemoryStorage(),
+      directoryPicker: async () => root,
+      parseTags: async (_file, name) => name === 'one.mp3'
+        ? { title: '标签标题', artists: ['歌手甲;歌手乙'], album: '专辑一' }
+        : { title: '第二首', artists: ['歌手丙'], album: null },
+    });
+    // 桌面壳(WebView2)是 Chromium,具备 showDirectoryPicker;jsdom 需要补一个标记
+    Object.defineProperty(window, 'showDirectoryPicker', { value: vi.fn(), configurable: true });
+    const mockService = service();
+    const user = userEvent.setup();
+    render(<App clientLibrary={client} service={mockService} />);
+
+    await user.click(await screen.findByRole('button', { name: '本地音乐库' }));
+
+    // 服务端 roots/scan 表单不渲染,也不产生任何 /api/local-library 调用
+    expect(mockService.getLocalLibrary).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '手动输入路径' })).not.toBeInTheDocument();
+    expect(screen.queryByText('服务端音乐库（NAS）')).not.toBeInTheDocument();
+    expect(await screen.findByText('还没有本机歌曲。点击「扫描本机文件夹」选择音乐文件夹。')).toBeInTheDocument();
+
+    // 选择文件夹(桌面壳的真实入口是 showDirectoryPicker)并扫描入库
+    await user.click(screen.getByRole('button', { name: '扫描本机文件夹' }));
+    expect(await screen.findByText('标签标题')).toBeInTheDocument();
+    expect(screen.getByText('第二首')).toBeInTheDocument();
+    expect(screen.getByText('共 2 首本机歌曲')).toBeInTheDocument();
+    expect(screen.getByText('歌手甲、歌手乙')).toBeInTheDocument();
+    expect(screen.getByText('本机音乐库保存在浏览器 IndexedDB 中，重新打开页面仍在；重新扫描会保留手工编辑。')).toBeInTheDocument();
+
+    // 行内编辑(PATCH 语义)
+    await user.click(screen.getAllByRole('button', { name: '编辑' })[0] as HTMLElement);
+    const titleInput = screen.getByLabelText('标题');
+    await user.clear(titleInput);
+    await user.type(titleInput, '手工新标题');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    expect(await screen.findByText('手工新标题')).toBeInTheDocument();
+
+    // 删除条目
+    await user.click(screen.getAllByRole('button', { name: '删除歌曲' })[0] as HTMLElement);
+    expect(await screen.findByText('共 1 首本机歌曲')).toBeInTheDocument();
+    expect(screen.queryByText('手工新标题')).not.toBeInTheDocument();
+  });
+
+  it('web mode hides the on-device section when showDirectoryPicker is unavailable', async () => {
+    const user = userEvent.setup();
+    render(<App service={service({ getLocalLibrary: vi.fn(async () => populatedLibrary()) })} />);
+
+    await user.click(await screen.findByRole('button', { name: '本地音乐库' }));
+    expect(await screen.findByText('/music/flac')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '扫描本机文件夹' })).not.toBeInTheDocument();
+    expect(screen.queryByText('本机音乐库（浏览器）')).not.toBeInTheDocument();
+  });
+
+  it('exports with excludeTrackKeys from the on-device library and shows the excluded count notice', async () => {
+    const client = await clientLibraryWith([
+      { title: '夜空中最亮的星', artists: ['逃跑计划'], album: '世界' },
+      { title: 'Song Two', artists: ['乙'], album: null },
+    ]);
+    const mockService = service({
+      createExport: vi.fn(async () => ({
+        filename: 'netease_通勤歌单_2026-09-04.txt',
+        mimeType: 'text/plain;charset=utf-8',
+        bytes: new TextEncoder().encode('夜空中最亮的星 - 逃跑计划\n'),
+        excludedTrackCount: 2,
+      })),
+    });
+    const user = userEvent.setup();
+    render(<App clientLibrary={client} service={mockService} />);
+    await screen.findByLabelText('歌单链接或 ID');
+
+    await user.type(screen.getByLabelText('歌单链接或 ID'), '12345');
+    await user.click(screen.getByRole('button', { name: '读取歌单' }));
+    expect(await screen.findByText('共 2 首歌曲')).toBeInTheDocument();
+
+    const checkbox = screen.getByLabelText('排除本机音乐库已有的歌曲');
+    await waitFor(() => expect(checkbox).toBeEnabled());
+    await user.click(checkbox);
+    await user.click(screen.getByRole('button', { name: '导出文件' }));
+
+    await waitFor(() => expect(mockService.createExport).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({
+        excludeTrackKeys: ['t|夜空中最亮的星|逃跑计划', 't|song two|乙'],
+      }),
+    ));
+    expect(await screen.findByText('已排除本机已有 2 首')).toBeInTheDocument();
   });
 });

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { HttpPlaylistService, type PlaylistService, type SessionDuration } from './api.js';
+import { isDesktopShell } from './desktop.js';
 import { ExportWorkspace } from './components/ExportWorkspace.js';
 import { LocalLibraryView } from './components/LocalLibraryView.js';
 import { LoginView } from './components/LoginView.js';
 import { UserMenu } from './components/UserMenu.js';
+import { getDefaultClientLibrary, type ClientLibrary } from './localLibraryClient.js';
 import { zhCN } from './i18n/zh-CN.js';
 
 type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
@@ -14,20 +16,25 @@ export interface AppProps {
   readonly pollIntervalMs?: number;
   /** 本地音乐库扫描状态的轮询间隔；默认 1 秒（测试可调小）。 */
   readonly libraryPollIntervalMs?: number;
+  /** 注入本机音乐库客户端（测试用；默认 IndexedDB/内存回退实现）。 */
+  readonly clientLibrary?: ClientLibrary;
 }
 
 export default function App({
   service: injectedService,
   pollIntervalMs = 250,
   libraryPollIntervalMs = 1000,
+  clientLibrary: injectedClientLibrary,
 }: AppProps) {
-  const [authState, setAuthState] = useState<AuthState>('checking');
+  // 桌面壳(Tauri 静态壳)没有任何 /api/* 后端:不做会话探测,直接进入主界面。
+  const desktop = isDesktopShell();
+  const [authState, setAuthState] = useState<AuthState>(desktop ? 'authenticated' : 'checking');
   const [username, setUsername] = useState<string>();
   const [sessionNotice, setSessionNotice] = useState<string>();
   const [view, setView] = useState<MainView>('export');
-  // 初始会话探测失败(服务不可达、桌面壳无服务端等)时的降级标记:
+  // 初始会话探测失败(服务不可达)或桌面壳运行时的降级标记:
   // 放行进入主界面,但明确显示"本地模式"而不是伪造"已登录"。
-  const [serverUnreachable, setServerUnreachable] = useState(false);
+  const [serverUnreachable, setServerUnreachable] = useState(desktop);
 
   const playlistService = useMemo(
     () => injectedService ?? new HttpPlaylistService({
@@ -36,9 +43,16 @@ export default function App({
     [injectedService],
   );
 
+  const clientLibrary = useMemo(
+    () => injectedClientLibrary ?? getDefaultClientLibrary(),
+    [injectedClientLibrary],
+  );
+
   // 应用加载先查会话状态。查询本身失败（服务不可达等）时放行进入主界面：
   // 会话真正失效时任何 /api/* 调用都会返回 401 并回到登录视图。
+  // 桌面壳完全跳过该探测,不产生任何 /api 调用(根除"服务返回了无法识别的数据")。
   useEffect(() => {
+    if (desktop) return undefined;
     let cancelled = false;
     playlistService.getAuthStatus()
       .then(status => {
@@ -58,14 +72,15 @@ export default function App({
     return () => {
       cancelled = true;
     };
-  }, [playlistService]);
+  }, [playlistService, desktop]);
 
   const handleSessionExpired = useCallback((): void => {
+    if (desktop) return; // 桌面模式没有会话,不可能过期。
     setAuthState('unauthenticated');
     setUsername(undefined);
     setSessionNotice(zhCN.sessionExpired);
     setView('export');
-  }, []);
+  }, [desktop]);
 
   const handleLogin = useCallback(async (
     name: string,
@@ -138,7 +153,9 @@ export default function App({
       </div>
 
       {serverUnreachable && (
-        <p className="offline-banner" role="alert">{zhCN.offlineBanner}</p>
+        <p className="offline-banner" role="alert">
+          {desktop ? zhCN.desktopOnlineHint : zhCN.offlineBanner}
+        </p>
       )}
 
       {view === 'export' ? (
@@ -150,13 +167,17 @@ export default function App({
             <p className="privacy-note">{zhCN.privacyNote}</p>
           </header>
           <ExportWorkspace
+            clientLibrary={clientLibrary}
             onSessionExpired={handleSessionExpired}
+            onlineDisabled={desktop}
             pollIntervalMs={pollIntervalMs}
             service={playlistService}
           />
         </>
       ) : (
         <LocalLibraryView
+          clientLibrary={clientLibrary}
+          clientOnly={desktop || serverUnreachable}
           onSessionExpired={handleSessionExpired}
           pollIntervalMs={libraryPollIntervalMs}
           service={playlistService}

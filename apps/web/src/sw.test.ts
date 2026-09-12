@@ -247,9 +247,9 @@ describe('service worker cache boundary', () => {
     expect(harness.fetchMock).toHaveBeenCalledWith(expect.anything(), { cache: 'no-store' });
     await new Promise(resolve => setTimeout(resolve, 300));
     const store = harness.stores.get(harness.currentCacheName);
-    const updated = store.get(`${ORIGIN}/assets/app-abc123.js`);
+    const updated = store?.get(`${ORIGIN}/assets/app-abc123.js`);
     expect(updated).toBeDefined();
-    expect(await updated.text()).toBe('new-asset');
+    expect(await updated?.text()).toBe('new-asset');
   });
 
   it('fetches and caches hashed assets on first use', async () => {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { playlistSchema, trackSchema } from '../src/index.js';
+import {
+  excludeTrackKeysSchema,
+  playlistSchema,
+  trackKey,
+  trackSchema,
+} from '../src/index.js';
 
 const validTrack = {
   title: '同一首歌',
@@ -125,5 +130,46 @@ describe('playlistSchema', () => {
 
     expect(value.complete).toBe(false);
     expect(value.warnings).toEqual(['pagination stopped by user']);
+  });
+});
+
+describe('trackKey fingerprint', () => {
+  it('follows the frozen format: t|normalized-title|sorted-normalized-artists', () => {
+    expect(trackKey('Starlight', ['Aimer'])).toBe('t|starlight|aimer');
+  });
+
+  it('normalizes title and artists (trim, lowercase, whitespace collapse)', () => {
+    expect(trackKey('  StarLIGHT \t', ['  AIMER '])).toBe('t|starlight|aimer');
+    expect(trackKey('Night  Run', ['Eason   Chan'])).toBe('t|night run|eason chan');
+  });
+
+  it('sorts artists so ordering does not change the fingerprint', () => {
+    expect(trackKey('Night Run', ['B', 'A'])).toBe('t|night run|a;b');
+    expect(trackKey('Night Run', ['A', 'B'])).toBe('t|night run|a;b');
+  });
+
+  it('uses an empty artist segment for an empty or missing artist list', () => {
+    expect(trackKey('NoArtist', [])).toBe('t|noartist|');
+    expect(trackKey('NoArtist')).toBe('t|noartist|');
+  });
+});
+
+describe('excludeTrackKeysSchema', () => {
+  it('accepts up to 5000 keys of 1..200 characters', () => {
+    expect(excludeTrackKeysSchema.safeParse(['t|starlight|aimer']).success).toBe(true);
+    expect(excludeTrackKeysSchema.safeParse([]).success).toBe(true);
+    expect(excludeTrackKeysSchema.safeParse(['a'.repeat(200)]).success).toBe(true);
+    expect(
+      excludeTrackKeysSchema.safeParse(Array.from({ length: 5000 }, () => 'k')).success,
+    ).toBe(true);
+  });
+
+  it('rejects empty keys, keys over 200 characters, and more than 5000 keys', () => {
+    expect(excludeTrackKeysSchema.safeParse(['']).success).toBe(false);
+    expect(excludeTrackKeysSchema.safeParse(['a'.repeat(201)]).success).toBe(false);
+    expect(
+      excludeTrackKeysSchema.safeParse(Array.from({ length: 5001 }, () => 'k')).success,
+    ).toBe(false);
+    expect(excludeTrackKeysSchema.safeParse('t|starlight|aimer').success).toBe(false);
   });
 });

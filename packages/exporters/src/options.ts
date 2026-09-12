@@ -14,6 +14,12 @@ export interface ExportOptions {
   readonly csvBom?: boolean;
   readonly date?: string;
   readonly generatedAt?: string;
+  /**
+   * 曲目指纹列表(冻结格式见 contracts 的 trackKey):用于“排除与本机音乐库
+   * 重复的曲目”。渲染器不使用该字段 —— 过滤由服务端(或调用方)在导出前完成,
+   * 这里仅做选项合法化与透传。
+   */
+  readonly excludeTrackKeys?: string[];
 }
 
 export interface NormalizedExportOptions {
@@ -26,6 +32,8 @@ export interface NormalizedExportOptions {
   readonly csvBom: boolean;
   readonly date: string;
   readonly generatedAt: string;
+  /** 原样透传,渲染器不读取;未提供时为 undefined。 */
+  readonly excludeTrackKeys?: string[];
 }
 
 export interface ExportArtifact {
@@ -79,6 +87,7 @@ export function normalizeExportOptions(options: ExportOptions): NormalizedExport
     csvBom: options.csvBom ?? false,
     date,
     generatedAt: options.generatedAt ?? now.toISOString(),
+    excludeTrackKeys: options.excludeTrackKeys,
   };
 }
 

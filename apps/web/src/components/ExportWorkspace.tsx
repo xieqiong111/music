@@ -11,6 +11,11 @@ import {
   type JobStatus,
   type PlaylistService,
 } from '../api.js';
+import {
+  EXCLUDE_TRACK_KEYS_LIMIT,
+  type ClientLibrary,
+  getDefaultClientLibrary,
+} from '../localLibraryClient.js';
 import { ErrorDetails } from './ErrorDetails.js';
 import { ExportOptionsPanel } from './ExportOptions.js';
 import { ImportPanel } from './ImportPanel.js';
@@ -82,12 +87,18 @@ export interface ExportWorkspaceProps {
   readonly service: PlaylistService;
   readonly pollIntervalMs?: number;
   readonly onSessionExpired: () => void;
+  /** 桌面壳:没有服务端,在线分析入口禁用,服务端音乐库查询跳过。 */
+  readonly onlineDisabled?: boolean;
+  /** 注入本机音乐库客户端(测试用;默认 IndexedDB/内存回退实现)。 */
+  readonly clientLibrary?: ClientLibrary;
 }
 
 export function ExportWorkspace({
   service,
   pollIntervalMs = 250,
   onSessionExpired,
+  onlineDisabled = false,
+  clientLibrary: injectedClientLibrary,
 }: ExportWorkspaceProps) {
   const [provider, setProvider] = useState<ProviderId>('netease');
   const [input, setInput] = useState('');
@@ -101,16 +112,25 @@ export function ExportWorkspace({
   const [excludedLocalCount, setExcludedLocalCount] = useState<number>();
   // 服务端导出时本地音乐库的条目数：0 → 复选框禁用并提示“本地音乐库为空”。
   const [libraryEntryCount, setLibraryEntryCount] = useState<number>();
+  // 本机音乐库(纯客户端,IndexedDB):条目数与导出排除指纹。
+  const [clientLibraryCount, setClientLibraryCount] = useState<number>();
+  const [clientTrackKeys, setClientTrackKeys] = useState<readonly string[]>([]);
+  const [excludeClientTracks, setExcludeClientTracks] = useState(false);
+  const [excludedTrackCount, setExcludedTrackCount] = useState<number>();
   // true when the previewed playlist came from a local file import; those
   // exports are generated in the browser and never hit the server.
   const [imported, setImported] = useState(false);
   const generation = useRef(0);
   const jobIdRef = useRef<string | undefined>(undefined);
+  const clientLibrary = injectedClientLibrary ?? getDefaultClientLibrary();
 
   const detected = detectProvider(input);
   const effectiveProvider = detected ?? provider;
   const active = status === 'queued' || status === 'running';
-  const canSubmit = input.trim() !== '' && SUPPORTED_PROVIDERS.has(effectiveProvider) && !active;
+  const canSubmit = !onlineDisabled &&
+    input.trim() !== '' &&
+    SUPPORTED_PROVIDERS.has(effectiveProvider) &&
+    !active;
 
   const changeInput = (value: string): void => {
     setInput(value);
@@ -119,8 +139,9 @@ export function ExportWorkspace({
   };
 
   // 服务端歌单预览完成后查询一次本地音乐库条目数，用于“排除本地已有歌曲”复选框。
+  // 桌面壳(onlineDisabled)没有服务端:跳过该 /api 调用。
   useEffect(() => {
-    if (playlist?.complete !== true || imported) {
+    if (playlist?.complete !== true || imported || onlineDisabled) {
       setLibraryEntryCount(undefined);
       return undefined;
     }
@@ -137,7 +158,35 @@ export function ExportWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [playlist, imported, service]);
+  }, [playlist, imported, service, onlineDisabled]);
+
+  // 歌单就绪后读取本机音乐库条目数与排除指纹(纯 IndexedDB,零网络)。
+  useEffect(() => {
+    if (playlist?.complete !== true || imported) {
+      setClientLibraryCount(undefined);
+      setClientTrackKeys([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setClientLibraryCount(undefined);
+    setClientTrackKeys([]);
+    clientLibrary.trackKeys()
+      .then(result => {
+        if (cancelled) return;
+        setClientLibraryCount(result.total);
+        setClientTrackKeys(result.keys);
+      })
+      .catch(() => {
+        // 读取失败(如 IndexedDB 不可用)按空库处理:复选框禁用并提示“为空”。
+        if (!cancelled) {
+          setClientLibraryCount(0);
+          setClientTrackKeys([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [playlist, imported, clientLibrary]);
 
   const inspect = async (): Promise<void> => {
     if (input.trim() === '') {
@@ -154,6 +203,8 @@ export function ExportWorkspace({
     setSnapshot(undefined);
     setImported(false);
     setExcludedLocalCount(undefined);
+    setExcludedTrackCount(undefined);
+    setExcludeClientTracks(false);
     jobIdRef.current = undefined;
     setJobId(undefined);
     setStatus('queued');
@@ -227,6 +278,8 @@ export function ExportWorkspace({
     setStatus(undefined);
     setJobId(undefined);
     setExcludedLocalCount(undefined);
+    setExcludedTrackCount(undefined);
+    setExcludeClientTracks(false);
     jobIdRef.current = undefined;
     if (previousJob !== undefined) {
       void service.cancelJob(previousJob).catch(caught => {
@@ -259,14 +312,22 @@ export function ExportWorkspace({
     setExporting(true);
     setError(undefined);
     setExcludedLocalCount(undefined);
+    setExcludedTrackCount(undefined);
+    // 勾选“排除本机音乐库已有的歌曲”时,把全部本机条目指纹(契约上限 5000 项)
+    // 作为 excludeTrackKeys 交给服务端过滤。
+    const exportOptions: AppExportOptions =
+      excludeClientTracks && clientTrackKeys.length > 0
+        ? { ...options, excludeTrackKeys: clientTrackKeys.slice(0, EXCLUDE_TRACK_KEYS_LIMIT) }
+        : options;
     try {
       if (imported) {
-        const artifact = exportPlaylist(playlist, options);
+        const artifact = exportPlaylist(playlist, exportOptions);
         download(artifact.filename, artifact.mimeType, artifact.bytes);
       } else {
-        const artifact = await service.createExport(jobId as string, options);
+        const artifact = await service.createExport(jobId as string, exportOptions);
         download(artifact.filename, artifact.mimeType, artifact.bytes);
         setExcludedLocalCount(artifact.excludedLocalCount);
+        setExcludedTrackCount(artifact.excludedTrackCount);
       }
     } catch (caught) {
       const jobError = errorFrom(caught);
@@ -282,7 +343,7 @@ export function ExportWorkspace({
 
   return (
     <>
-      <ProviderCards onSelect={setProvider} selected={provider} />
+      <ProviderCards disabled={onlineDisabled} onSelect={setProvider} selected={provider} />
       <PlaylistInput
         detected={detected}
         disabled={!canSubmit}
@@ -303,10 +364,15 @@ export function ExportWorkspace({
       {playlist !== undefined && <PreviewTable playlist={playlist} />}
       {playlist?.complete === true && (
         <ExportOptionsPanel
+          clientLibraryCount={clientLibraryCount}
+          clientTrackKeysTruncated={clientTrackKeys.length > EXCLUDE_TRACK_KEYS_LIMIT}
+          excludeClientTracks={excludeClientTracks}
           excludedLocalCount={excludedLocalCount}
+          excludedTrackCount={excludedTrackCount}
           exporting={exporting}
           libraryEntryCount={libraryEntryCount}
           onChange={setOptions}
+          onExcludeClientTracksChange={setExcludeClientTracks}
           onExport={() => void exportFile()}
           options={options}
         />

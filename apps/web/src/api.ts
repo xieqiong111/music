@@ -101,13 +101,22 @@ export interface ExportDownload {
   readonly filename: string;
   readonly mimeType: string;
   readonly bytes: Uint8Array;
-  /** 仅当服务端响应带 x-excluded-local-count 时存在（本地去重管道实际执行）。 */
+  /** 仅当服务端响应带 x-excluded-local-count 时存在(本地去重管道实际执行)。 */
   readonly excludedLocalCount?: number;
+  /** 仅当服务端响应带 x-excluded-track-count 时存在(excludeTrackKeys 指纹排除实际执行)。 */
+  readonly excludedTrackCount?: number;
 }
 
-/** 导出选项：在 packages/exporters 的 ExportOptions 上追加服务端本地去重开关。 */
+/**
+ * 导出选项:在 packages/exporters 的 ExportOptions 上追加服务端导出的
+ * 本地去重开关与"排除本机音乐库已有歌曲"的指纹列表。
+ * - excludeLocalDuplicates:服务端本地音乐库(NAS 扫描)去重;
+ * - excludeTrackKeys:本机音乐库条目指纹('t|title|artists…',契约上限 5000 项、
+ *   每项 1..200 字符),由服务端按指纹过滤曲目。
+ */
 export type AppExportOptions = ExportOptions & {
   readonly excludeLocalDuplicates?: boolean;
+  readonly excludeTrackKeys?: ReadonlyArray<string>;
 };
 
 export interface PlaylistService {
@@ -451,11 +460,15 @@ export class HttpPlaylistService implements PlaylistService {
     const excludedLocalCount = excludedLocalCountFrom(
       response.headers.get('x-excluded-local-count'),
     );
+    const excludedTrackCount = excludedLocalCountFrom(
+      response.headers.get('x-excluded-track-count'),
+    );
     return {
       filename: safeFilename(response.headers.get('content-disposition')),
       mimeType: response.headers.get('content-type') ?? 'application/octet-stream',
       bytes: new Uint8Array(await response.arrayBuffer()),
       ...(excludedLocalCount === undefined ? {} : { excludedLocalCount }),
+      ...(excludedTrackCount === undefined ? {} : { excludedTrackCount }),
     };
   }
 

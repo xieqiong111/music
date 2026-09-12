@@ -1,10 +1,19 @@
 export {
   availabilitySchema,
+  excludeTrackKeysSchema,
   playlistSchema,
   providerIdSchema,
+  trackKey,
+  trackKeySchema,
   trackSchema,
 } from './models.js';
-export type { Playlist, ProviderId, Track, TrackAvailability } from './models.js';
+export type {
+  ExcludeTrackKeys,
+  Playlist,
+  ProviderId,
+  Track,
+  TrackAvailability,
+} from './models.js';
 
 export type {
   AuthOptions,

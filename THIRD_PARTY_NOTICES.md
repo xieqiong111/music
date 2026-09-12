@@ -12,7 +12,7 @@ The Phase 1 candidate ledger is preserved in `outputs/THIRD_PARTY_NOTICES.md`. B
 | Hono | 4.13.5 | https://github.com/honojs/hono | MIT | HTTP routing and body-limit middleware; bundled into the NAS server artifact |
 | @hono/node-server | 2.1.1 | https://github.com/honojs/node-server | MIT | Node HTTP adapter; bundled into the NAS server artifact |
 | Zod | 4.5.4 | https://github.com/colinhacks/zod | MIT | Runtime schema validation; bundled into packages and the NAS server artifact |
-| music-metadata | 11.15.0 | https://github.com/Borewit/music-metadata | MIT | Audio file tag/duration parsing for the NAS local music library scanner; bundled into the NAS server artifact |
+| music-metadata | 11.15.0 | https://github.com/Borewit/music-metadata | MIT | Audio file tag/duration parsing for the NAS local music library scanner and the web client's on-device (IndexedDB) music library; bundled into the NAS server artifact and the web PWA bundle (browser-safe `core` entry, lazy-loaded) |
 | esbuild | 0.28.2 | https://github.com/evanw/esbuild | MIT | Build-time bundler only; its executable/source is not included in the server artifact |
 | React | 19.2.8 | https://github.com/facebook/react | MIT | Web UI runtime; bundled into the PWA |
 | React DOM | 19.2.8 | https://github.com/facebook/react | MIT | Browser renderer; bundled into the PWA |

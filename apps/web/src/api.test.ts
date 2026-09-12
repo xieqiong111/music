@@ -461,4 +461,36 @@ describe('HttpPlaylistService', () => {
     expect(artifact.mimeType).toBe('text/plain;charset=utf-8');
     expect(artifact.excludedLocalCount).toBeUndefined();
   });
+
+  it('surfaces x-excluded-track-count for on-device fingerprint exclusion and serializes excludeTrackKeys', async () => {
+    const requests: Array<{ body?: unknown }> = [];
+    const baseHeaders = {
+      'content-type': 'text/plain;charset=utf-8',
+      'content-disposition': "attachment; filename*=UTF-8''export.txt",
+    };
+    const fetchImpl = recordedFetch(async (url, init) => {
+      requests.push({ ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }) });
+      return new Response('kept\n', {
+        status: 200,
+        headers: { ...baseHeaders, 'x-excluded-track-count': '5' },
+      });
+    });
+    const service = new HttpPlaylistService({ fetchImpl });
+
+    const artifact = await service.createExport('job-1', {
+      format: 'txt',
+      excludeTrackKeys: ['t|夜空|逃跑计划', 't|song two|乙'],
+    });
+    expect(artifact.excludedTrackCount).toBe(5);
+    expect(artifact.excludedLocalCount).toBeUndefined();
+    expect(requests[0]).toEqual({
+      body: {
+        jobId: 'job-1',
+        options: {
+          format: 'txt',
+          excludeTrackKeys: ['t|夜空|逃跑计划', 't|song two|乙'],
+        },
+      },
+    });
+  });
 });

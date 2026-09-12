@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   type Playlist,
+  excludeTrackKeysSchema,
   providerIdSchema,
+  trackKey,
   type HttpTransport,
   type MusicProvider,
   type ProviderId,
@@ -80,12 +82,37 @@ const exportOptionsSchema = z.object({
   generatedAt: z.string().datetime({ offset: true }).optional(),
   // 预留给本地音乐库去重：仅在依赖注入了 filterLocalDuplicates 时生效。
   excludeLocalDuplicates: z.boolean().optional(),
+  // 曲目指纹排除（本机音乐库）：类型先放宽为数组，逐项 1..200 字符、最多 5000 项的
+  // 约束在路由内用 contracts 的 excludeTrackKeysSchema 校验，以便返回专门的
+  // 400 INVALID_EXPORT_OPTIONS 中文错误，而非泛化的 INVALID_REQUEST。
+  excludeTrackKeys: z.array(z.string()).optional(),
 }).strict();
 
 const exportSchema = z.object({
   jobId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/u),
   options: exportOptionsSchema,
 }).strict();
+
+/**
+ * 曲目指纹排除管线：按冻结公式（contracts 的 trackKey）对每首曲目计算指纹，
+ * 命中 keys 集合则剔除。剔除后重排 position、total 重算（与本地去重管道一致，
+ * 保持 complete ⇒ total === tracks.length 不变式），warnings 追加中文提示。
+ */
+const filterTracksByKeys = (
+  playlist: Playlist,
+  keys: ReadonlySet<string>,
+): { readonly playlist: Playlist; readonly excluded: number } => {
+  const kept = playlist.tracks.filter(track => !keys.has(trackKey(track.title, track.artists ?? [])));
+  const excluded = playlist.tracks.length - kept.length;
+  const tracks = kept.map((track, position) => ({ ...track, position }));
+  const warnings = excluded > 0
+    ? [...playlist.warnings, `已按本机音乐库排除 ${excluded} 首重复曲目`]
+    : [...playlist.warnings];
+  return {
+    playlist: { ...playlist, total: tracks.length, tracks, warnings },
+    excluded,
+  };
+};
 
 const loginSchema = z.object({
   username: z.string().min(1).max(64),
@@ -441,7 +468,7 @@ export const createServerApp = (dependencies: ServerAppDependencies) => {
     // 本地去重管道（预留给本地音乐库联调）：仅在依赖注入了 filterLocalDuplicates
     // 且选项 excludeLocalDuplicates=true 时执行；默认（未注入或未开启）完全保持
     // 现状行为，不做任何过滤。
-    const { excludeLocalDuplicates, ...exportOptions } = body.value.options;
+    const { excludeLocalDuplicates, excludeTrackKeys, ...exportOptions } = body.value.options;
     const duplicateFilter = dependencies.filterLocalDuplicates;
     const shouldFilterDuplicates = duplicateFilter !== undefined && excludeLocalDuplicates === true;
     let exportSource = playlist;
@@ -450,6 +477,25 @@ export const createServerApp = (dependencies: ServerAppDependencies) => {
       const filtered = duplicateFilter(playlist);
       exportSource = filtered.playlist;
       excludedLocalCount = filtered.excluded;
+    }
+
+    // 曲目指纹排除管道（本机音乐库）：前端把本机库条目按冻结公式计算成指纹集合
+    // 随导出选项传入，服务端对歌单曲目计算同形指纹并按集合剔除。与本地去重按
+    // 顺序串联（并集语义，两者都能生效），剔除计数各自独立统计。
+    let excludedTrackCount: number | undefined;
+    if (excludeTrackKeys !== undefined) {
+      const parsedKeys = excludeTrackKeysSchema.safeParse(excludeTrackKeys);
+      if (!parsedKeys.success) {
+        return errorResponse(
+          context,
+          400,
+          'INVALID_EXPORT_OPTIONS',
+          '排除曲目指纹选项无效：每项需为 1~200 字符的字符串，且最多 5000 项',
+        );
+      }
+      const filtered = filterTracksByKeys(exportSource, new Set(parsedKeys.data));
+      exportSource = filtered.playlist;
+      excludedTrackCount = filtered.excluded;
     }
 
     let artifact;
@@ -485,6 +531,10 @@ export const createServerApp = (dependencies: ServerAppDependencies) => {
         // 仅在本地去重管道实际执行时返回被剔除的本地曲目数。
         ...(excludedLocalCount === undefined ? {} : {
           'x-excluded-local-count': String(excludedLocalCount),
+        }),
+        // 仅在请求携带 excludeTrackKeys 选项时输出该头（即便剔除 0 首也输出）。
+        ...(excludedTrackCount === undefined ? {} : {
+          'x-excluded-track-count': String(excludedTrackCount),
         }),
         ...(requestOrigin === undefined ? {} : {
           'access-control-allow-origin': requestOrigin,
