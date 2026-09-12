@@ -123,14 +123,20 @@ const failCacheWrites = (harness: Harness, where: 'open' | 'put'): void => {
 
 const runFetchEvent = (listener: Listener, request: Request): Promise<Response> => {
   let captured: Promise<Response> | undefined;
+  const until: Promise<unknown>[] = [];
   listener({
     request,
     respondWith: response => {
       captured = response;
     },
+    waitUntil: promise => {
+      until.push(promise);
+    },
   });
   if (captured === undefined) throw new Error('respondWith missing');
-  return captured;
+  // stale-while-revalidate 的后台刷新通过 waitUntil 挂载;返回前等它完成,
+  // 便于断言缓存已被刷新。透传(不 respondWith)仍同步抛错。
+  return Promise.all([captured, Promise.all(until)]).then(([response]) => response);
 };
 
 const runLifecycleEvent = (listener: Listener): Promise<unknown> => {
@@ -228,7 +234,7 @@ describe('service worker cache boundary', () => {
     expect(harness.fetchMock).toHaveBeenCalledOnce();
   });
 
-  it('keeps cache-first for hashed static assets', async () => {
+  it('serves hashed assets stale-while-revalidate and refreshes the cache', async () => {
     const harness = await loadServiceWorker();
     await harness.seedCache(harness.currentCacheName, `${ORIGIN}/assets/app-abc123.js`, 'old-asset');
     harness.fetchMock.mockResolvedValue(basicResponse('new-asset'));
@@ -236,8 +242,14 @@ describe('service worker cache boundary', () => {
       harness.fetchListener,
       new Request(`${ORIGIN}/assets/app-abc123.js`),
     );
+    // SWR:命中缓存立即返回旧值;后台以 no-store 刷新缓存(下一次重载拿到新值)
     expect(await response.text()).toBe('old-asset');
-    expect(harness.fetchMock).not.toHaveBeenCalled();
+    expect(harness.fetchMock).toHaveBeenCalledWith(expect.anything(), { cache: 'no-store' });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const store = harness.stores.get(harness.currentCacheName);
+    const updated = store.get(`${ORIGIN}/assets/app-abc123.js`);
+    expect(updated).toBeDefined();
+    expect(await updated.text()).toBe('new-asset');
   });
 
   it('fetches and caches hashed assets on first use', async () => {

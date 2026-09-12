@@ -1,13 +1,16 @@
-// 缓存命名:前缀固定,版本号在每次发布前端资源时递增(本处曾固定 v1,是旧
-// HTML 长期驻留的成因之一,现升为 v2);activate 阶段删除不属于当前版本的
-// 旧缓存,已有 v1 客户端升级后旧缓存随之清除。
+// 缓存命名:前缀固定,版本号在每次发布前端资源时递增(v1 是旧 HTML 长期
+// 驻留的成因之一;v2 期间发生过"同版本重复部署导致 WebView2 持久化缓存钉住
+// 旧界面"的实际案例,故 v3 起入口与资源联网请求一律携带 cache:'no-store',
+// 并对 hash 资源采用 stale-while-revalidate —— 即使发布时忘记递增版本号,
+// 页面重载一次也能自愈到最新资源)。activate 阶段删除不属于当前版本的旧
+// 缓存,老客户端升级后旧缓存随之清除。
 //
 // 策略边界:浏览器对 sw.js 自身的更新检查(脚本字节比对、安装/等待/激活)
 // 由浏览器独立进行,本脚本的 fetch 拦截不参与、也无法拦截;这里能控制的只是
 // 入口响应策略与缓存的命名、清理。旧缺陷正是入口 HTML cache-first 加上固定
 // 缓存版本,导致部署新版本后客户端继续使用旧 HTML 与旧 hash 资源。
 const CACHE_PREFIX = 'playlist-exporter-static-';
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
 
 // 可拦截的同源静态请求:仅 GET、同源;/api/、/healthz、跨源以及带
@@ -83,7 +86,10 @@ self.addEventListener('fetch', event => {
       // (旧缓存尚未清理)仍可离线;无缓存时继续抛出原始失败,不伪造响应。
       let response;
       try {
-        response = await fetch(request);
+        // no-store:绕过 WebView2/浏览器的持久化 HTTP 缓存。Tauri 壳的数据
+        // 目录跨进程重启持久存在,若允许读 HTTP 缓存,重装/更新 exe 后第一
+        // 次导航仍可能拿到旧 index.html。
+        response = await fetch(request, { cache: 'no-store' });
       } catch (error) {
         const cached = await caches.match(request);
         if (cached !== undefined) return cached;
@@ -91,10 +97,24 @@ self.addEventListener('fetch', event => {
       }
       return cacheResponse(request, response);
     }
-    // 其余静态资源(带 hash 的构建产物、图标、manifest)内容不可变,保留
-    // 缓存优先,未命中才联网并写入缓存;写缓存同样尽力而为。
+    // 其余静态资源(带 hash 的构建产物、图标、manifest):stale-while-
+    // revalidate —— 命中缓存立即返回,同时后台用 no-store 的网络响应刷新
+    // 缓存;未命中则等待联网。SWR 保证"发布时忘记递增版本号"的场景在
+    // 下一次重载自愈;写缓存同样尽力而为。
     const cached = await caches.match(request);
-    if (cached !== undefined) return cached;
-    return cacheResponse(request, await fetch(request));
+    let networkError;
+    const revalidate = fetch(request, { cache: 'no-store' })
+      .then(response => cacheResponse(request, response))
+      .catch(error => {
+        networkError = error;
+        return undefined;
+      });
+    if (cached !== undefined) {
+      event.waitUntil(revalidate);
+      return cached;
+    }
+    const response = await revalidate;
+    if (response === undefined) throw networkError;
+    return response;
   })());
 });
