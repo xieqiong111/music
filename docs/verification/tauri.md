@@ -139,3 +139,13 @@
   - Windows:NSIS setup.exe + MSI;macOS:aarch64 DMG;Android:aarch64 debug APK
   - 资产由 CI run 34629121676 与本机 Windows 构建产出,发布说明含签名警告与安装指引
 - 源码 tag v0.1.0 指向 main(428f734 之后);发布不改变任何源码
+
+## 桌面壳缓存钉住缺陷修复回填(2026-09-12)
+
+实机复现:重装/更新 exe 后(WebView2 数据目录持久存在),旧 Service Worker(v2)+ HTTP 缓存把旧 UI 钉住,联网动作报 `Unexpected token '<'`(Tauri 静态壳对缺失 /api 路径回退 HTML,前端按 JSON 解析)。
+
+修复:
+- `CACHE_VERSION` v2→v3(v2 期间发生过同版本重复部署钉住旧界面的实例);v3 起入口与资源联网 fetch 一律 `cache: 'no-store'` 绕过 WebView2 持久化 HTTP 缓存
+- hash 静态资源改为 stale-while-revalidate:命中缓存立即返回,后台 no-store 刷新 —— 即使发布时忘记递增版本号,重载一次即自愈
+- Web 端:`#json` 非 JSON 响应转 `INVALID_SERVER_RESPONSE` 结构化中文错误(不再裸抛 SyntaxError);`structuredError` 消息带 HTTP 状态码;认证探测失败时显示"本地模式"徽章与横幅,替代伪造的"已登录"
+- 实机升级路径验证:污染数据目录 → 首次导航旧 SW 掌权(预期)→ 一次刷新 → v3 接管 → "本地模式"徽章与横幅出现,旧缓存清除
